@@ -62,24 +62,24 @@ KEEP_ALIVE_INTERVALO = 30 * 60 * 1000  # 30 minutos em milissegundos
 # Modelos suportados
 MODELOS = {
     "ONE": {
-        "colunas": ["Código", "Empresa", "Telefone", "Caminho"],
+        "colunas": ["Codigo", "Nome", "Numero", "Caminho"],
         "mensagem_padrao": "ONEmessage"
     },
     "ALL": {
-        "colunas": ["Codigo", "Empresa", "Telefone"],
+        "colunas": ["Codigo", "Empresa", "Contato Onvio", "Grupo Onvio", "CNPJ", "Telefone"],
         "mensagem_padrao": "Mensagem Padrão"
     },
     "ALL_info": {
-        "colunas": ["Codigo", "Empresa", "Telefone"],
-        "colunas_opcionais": ["CNPJ", "Competencia", "Info_Extra"],  # Colunas que podem ou não existir
+        "colunas": ["Codigo", "Nome", "Numero"],
+        "colunas_opcionais": ["CNPJ", "Competencia", "Info_Extra"],
         "mensagem_padrao": "ALLinfo"
     },
     "Cobranca": {
-        "colunas": ["Código", "Empresa", "Telefone", "Valor da Parcela", "Data de Vencimento", "Carta de Aviso"],
+        "colunas": ["Codigo", "Nome", "Numero", "Valor da Parcela", "Data de Vencimento", "Carta de Aviso"],
         "mensagem_padrao": "Cobranca"
     },
     "ComuniCertificado": {
-       "colunas": ["Codigo", "Empresa", "Telefone", "CNPJ", "Vencimento", "Carta de Aviso"],
+       "colunas": ["Codigo", "Nome", "Numero", "CNPJ", "Vencimento", "Carta de Aviso"],
         "mensagem_padrao": "Cobranca"
     }
 }
@@ -104,15 +104,33 @@ def formatar_telefone_whatsapp(telefone):
     return telefone
 
 def navegar_para_contato_whatsapp(driver, telefone):
-    """Navega para o chat do WhatsApp Web usando a URL wa.me.
-    O fluxo é: wa.me -> página de confirmação -> clica 'Continuar no Web' -> nova aba abre com o chat."""
+    """Navega para o chat do WhatsApp Web usando URL direta.
+    Se já estiver no WhatsApp Web, usa a URL direta do send. Caso contrário, passa pelo wa.me."""
     try:
         telefone_formatado = formatar_telefone_whatsapp(telefone)
-        url = f"https://wa.me/{telefone_formatado}"
+        url_atual = driver.current_url
         atualizar_log(f"Navegando para WhatsApp: {telefone_formatado}...")
+
+        # Se já está no WhatsApp Web, navegar direto pela URL send
+        if "web.whatsapp.com" in url_atual:
+            url_direta = f"https://web.whatsapp.com/send?phone={telefone_formatado}"
+            atualizar_log(f"Já no WhatsApp Web, navegando direto...")
+            driver.get(url_direta)
+            time.sleep(8)
+
+            if not esperar_carregamento_completo(driver):
+                return False
+
+            atualizar_log(f"Chat aberto para {telefone_formatado}.", cor="azul")
+            return True
+
+        # Primeira vez: precisa passar pelo wa.me
+        url = f"https://wa.me/{telefone_formatado}"
+        atualizar_log(f"URL: {url}")
 
         # Guardar a aba original
         aba_original = driver.current_window_handle
+        abas_antes = set(driver.window_handles)
 
         driver.get(url)
         time.sleep(5)
@@ -120,17 +138,18 @@ def navegar_para_contato_whatsapp(driver, telefone):
         if not esperar_carregamento_completo(driver):
             return False
 
-        # Clicar no botão "Continuar no Web"
+        # Clicar no botão "Continuar para o WhatsApp Web"
         botao_continuar = WebDriverWait(driver, 15).until(
-            EC.element_to_be_clickable((By.XPATH, '//*[@id="action-button"]'))
+            EC.element_to_be_clickable((By.XPATH, '//*[@id="action-button"][.//span[contains(text(), "WhatsApp Web")]]'))
         )
         botao_continuar.click()
-        atualizar_log("Botão 'Continuar no Web' clicado.")
+        atualizar_log("Botão 'Continuar para o WhatsApp Web' clicado.")
         time.sleep(5)
 
         # Aguardar nova aba abrir e trocar para ela
-        WebDriverWait(driver, 15).until(lambda d: len(d.window_handles) > 1)
-        nova_aba = [aba for aba in driver.window_handles if aba != aba_original][0]
+        WebDriverWait(driver, 15).until(lambda d: len(d.window_handles) > len(abas_antes))
+        abas_novas = set(driver.window_handles) - abas_antes
+        nova_aba = abas_novas.pop()
         driver.switch_to.window(nova_aba)
         atualizar_log("Trocado para nova aba do WhatsApp Web.")
 
@@ -140,7 +159,7 @@ def navegar_para_contato_whatsapp(driver, telefone):
         driver.switch_to.window(nova_aba)
 
         # Aguardar o chat carregar
-        time.sleep(5)
+        time.sleep(8)
         if not esperar_carregamento_completo(driver):
             return False
 
@@ -160,12 +179,22 @@ def enviar_mensagem(driver, telefone, mensagem, codigo, identificador, modelo=No
         tem_mensagem = mensagem and mensagem.strip()
 
         if tem_mensagem:
-            # Localizar a caixa de mensagem
-            caixa_msg = WebDriverWait(driver, 15).until(
-                EC.element_to_be_clickable((By.XPATH, '//*[@id="main"]/footer/div[1]/div/span/div/div/div/div[3]'))
-            )
-            caixa_msg.click()
-            atualizar_log("Caixa de mensagem encontrada e clicada.")
+            # Localizar a caixa de mensagem (campo de texto com placeholder)
+            caixa_msg = None
+            for tentativa in range(3):
+                try:
+                    caixa_msg = WebDriverWait(driver, 15).until(
+                        EC.element_to_be_clickable((By.CSS_SELECTOR, '#main footer div.lexical-rich-text-input p'))
+                    )
+                    caixa_msg.click()
+                    atualizar_log("Caixa de mensagem encontrada e clicada.")
+                    break
+                except Exception:
+                    atualizar_log(f"Tentativa {tentativa + 1}/3: caixa de mensagem não encontrada, aguardando...", cor="azul")
+                    time.sleep(5)
+            if not caixa_msg:
+                atualizar_log("Não foi possível encontrar a caixa de mensagem.", cor="vermelho")
+                return False
 
             if cancelar:
                 atualizar_log("Processamento cancelado!", cor="azul")
@@ -209,16 +238,21 @@ def obter_perfil_chrome():
     return perfil_selecionado.get() if perfil_selecionado else "1"
 
 def obter_user_data_dir():
-    """Retorna o diretório de dados do Chrome baseado no perfil selecionado.
-    Cada perfil usa um diretório SEPARADO para permitir execução simultânea."""
+    """Retorna o diretório de dados do Chrome baseado no perfil selecionado."""
     perfil = obter_perfil_chrome()
+    if perfil == "Teste":
+        return os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\User Data")
     return rf"C:\PerfisChrome\automacao_perfil{perfil}"
 
 def abrir_chrome_com_url(url):
-    # Encerra apenas o Chrome do perfil atual (não interfere no outro perfil)
-    encerrar_processos_chrome()
-    user_data_dir = obter_user_data_dir()
     perfil = obter_perfil_chrome()
+    user_data_dir = obter_user_data_dir()
+
+    if perfil == "Teste":
+        return abrir_chrome_teste_com_url(url)
+
+    # Encerra apenas o Chrome do perfil de automação
+    encerrar_processos_chrome()
 
     # Criar diretório se não existir
     if not os.path.exists(user_data_dir):
@@ -247,6 +281,82 @@ def abrir_chrome_com_url(url):
         return driver
     except Exception as e:
         atualizar_log(f"Erro ao abrir o Chrome: {str(e)}")
+        return None
+
+def abrir_chrome_teste_com_url(url):
+    """Abre Chrome de teste copiando dados de sessão do perfil padrão para um perfil limpo."""
+    import shutil
+
+    # Fechar TUDO relacionado ao Chrome
+    atualizar_log("Fechando todos os processos Chrome...", cor="azul")
+    os.system("taskkill /f /im chrome.exe >nul 2>&1")
+    os.system("taskkill /f /im chromedriver.exe >nul 2>&1")
+    for proc in psutil.process_iter(['name']):
+        try:
+            if proc.info['name'] and 'chrome' in proc.info['name'].lower():
+                proc.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    time.sleep(5)
+
+    # Copiar dados de sessão do perfil padrão para o perfil de teste
+    perfil_padrao = os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\User Data\Default")
+    perfil_teste = r"C:\PerfisChrome\automacao_teste\Default"
+    os.makedirs(perfil_teste, exist_ok=True)
+
+    # Copiar arquivos essenciais de sessão (cookies, localStorage, IndexedDB do WhatsApp)
+    arquivos_sessao = [
+        "Cookies", "Cookies-journal",
+        "Login Data", "Login Data-journal",
+        "Web Data", "Web Data-journal",
+        "Preferences", "Secure Preferences",
+    ]
+    pastas_sessao = ["Local Storage", "IndexedDB", "Service Worker"]
+
+    for arquivo in arquivos_sessao:
+        src = os.path.join(perfil_padrao, arquivo)
+        dst = os.path.join(perfil_teste, arquivo)
+        if os.path.exists(src):
+            try:
+                shutil.copy2(src, dst)
+            except Exception:
+                pass
+
+    for pasta in pastas_sessao:
+        src = os.path.join(perfil_padrao, pasta)
+        dst = os.path.join(perfil_teste, pasta)
+        if os.path.exists(src):
+            try:
+                if os.path.exists(dst):
+                    shutil.rmtree(dst)
+                shutil.copytree(src, dst)
+            except Exception:
+                pass
+
+    atualizar_log("Dados de sessão copiados do perfil padrão.", cor="azul")
+
+    # Abrir Chrome com o perfil de teste (limpo, sem conflito)
+    user_data_dir = r"C:\PerfisChrome\automacao_teste"
+    atualizar_log(f"Usando perfil: Teste ({user_data_dir})", cor="azul")
+
+    chrome_options = webdriver.ChromeOptions()
+    chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
+    chrome_options.add_argument("--start-maximized")
+    chrome_options.add_argument("--disable-translate")
+    chrome_options.add_argument("--lang=pt-BR")
+    chrome_options.add_argument("--enable-javascript")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+
+    service = Service(ChromeDriverManager().install())
+    try:
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+        driver.set_page_load_timeout(180)
+        driver.get(url)
+        atualizar_log(f"Chrome aberto com perfil de teste. URL: {url}", cor="verde")
+        return driver
+    except Exception as e:
+        atualizar_log(f"Erro ao abrir Chrome: {str(e)}", cor="vermelho")
         return None
 
 def encerrar_processos_chrome():
@@ -293,9 +403,12 @@ def validar_excel(caminho, modelo):
             atualizar_log(f"Colunas detectadas: {colunas_excel}")
             return True
 
-        if colunas_excel != colunas_esperadas:
+        # Aceitar Excel com colunas extras (ex: CNPJ) desde que as colunas esperadas estejam presentes no início
+        if colunas_excel[:len(colunas_esperadas)] != colunas_esperadas:
             messagebox.showerror("Erro", f"O Excel não corresponde ao modelo {modelo}. Esperado: {colunas_esperadas}")
             return False
+        if len(colunas_excel) > len(colunas_esperadas):
+            atualizar_log(f"Colunas extras ignoradas: {colunas_excel[len(colunas_esperadas):]}")
         return True
     except Exception as e:
         atualizar_log(f"Erro ao validar Excel: {str(e)}", cor="vermelho")
@@ -411,9 +524,9 @@ def ler_dados_excel(caminho_excel, modelo, linha_inicial=2):
                         }
 
                 else:  # Modelo ALL
-                    # Colunas: Codigo, Empresa, Telefone
-                    empresa, telefone = row[1:3]
-                    telefone = str(telefone) if telefone is not None else ""
+                    # Colunas: Codigo, Empresa, Contato Onvio, Grupo Onvio, CNPJ, Telefone
+                    empresa = row[1]
+                    telefone = str(row[5]) if row[5] is not None else ""
                     # Agrupar por telefone
                     if telefone in dados:
                         dados[telefone]['empresas'].append({
@@ -1572,11 +1685,12 @@ def main():
 
     ctk.CTkLabel(frame_row1, text="Perfil", font=FONT_LABEL, text_color="gray").pack(side="left")
     perfil_selecionado = ctk.StringVar(value="1")
-    combo_perfil = ctk.CTkComboBox(frame_row1, values=["1", "2"], variable=perfil_selecionado, width=50, height=H_INPUT, font=FONT_LABEL)
+    combo_perfil = ctk.CTkComboBox(frame_row1, values=["1", "2", "Teste"], variable=perfil_selecionado, width=70, height=H_INPUT, font=FONT_LABEL)
     combo_perfil.pack(side="left", padx=(6, 16))
 
     botao_iniciar_chrome = ctk.CTkButton(frame_row1, text="Chrome Automação", command=iniciar_chrome_automacao, width=70, height=H_BTN, font=FONT_LABEL, fg_color="#4a5568", hover_color="#2d3748")
     botao_iniciar_chrome.pack(side="left")
+
 
     # Linha 2: Excel
     frame_row2 = ctk.CTkFrame(frame_esquerda, fg_color="transparent")
