@@ -1772,10 +1772,10 @@ def main():
         return os.path.join(base_path, relative_path)
 
     try:
-        janela.iconbitmap(resource_path("logoOne.ico"))
+        janela.iconbitmap(resource_path(os.path.join("assets", "favicon.ico")))
     except:
         try:
-            icon_image = ctk.CTkImage(Image.open(resource_path("logoOne.png")), size=(32, 32))
+            icon_image = ctk.CTkImage(Image.open(resource_path(os.path.join("assets", "favicon-32x32.png"))), size=(32, 32))
             janela.iconphoto(False, icon_image)
         except Exception as e:
             print(f"Falha ao carregar ícone: {e}")
@@ -1793,7 +1793,7 @@ def main():
     frame_header.pack_propagate(False)
 
     try:
-        logo_image = ctk.CTkImage(Image.open(resource_path("logoOne.png")), size=(24, 24))
+        logo_image = ctk.CTkImage(Image.open(resource_path(os.path.join("assets", "logo_ONE_Whatsa.png"))), size=(24, 24))
         logo_label = ctk.CTkLabel(frame_header, image=logo_image, text="")
         logo_label.pack(side="left", padx=(0, 8))
     except Exception as e:

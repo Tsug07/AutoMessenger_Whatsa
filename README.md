@@ -1,8 +1,9 @@
 <!-- Logo -->
 <p align="center">
-  <!-- <img src="assets/logo.png" alt="AutoMessenger WhatsApp" width="200"> -->
-  <h1 align="center">AutoMessenger WhatsApp</h1>
+  <img src="assets/logo_ONE_Whatsa.png" alt="AutoMessenger WhatsApp" width="200">
 </p>
+
+<h1 align="center">AutoMessenger WhatsApp</h1>
 
 <p align="center">
   <strong>Automacao de envio de mensagens via WhatsApp Web</strong>
@@ -28,6 +29,9 @@ O **AutoMessenger WhatsApp** e uma ferramenta de automacao para envio em massa d
 - Suporte a multiplos modelos de mensagem (ALL, ONE, ALL_info, Cobranca, ComuniCertificado)
 - Importacao de contatos e dados via planilhas Excel (.xlsx)
 - Agrupamento automatico por numero de telefone
+- Deteccao automatica de numeros invalidos (sem WhatsApp)
+- Intervalo configuravel entre envios (anti-deteccao)
+- Mensagem de aviso automatica sobre numero de resposta
 - Agendamento de envios com keep-alive automatico
 - Interface grafica moderna com CustomTkinter
 - Sistema de logs detalhado por sessao
@@ -86,6 +90,7 @@ python AM_Whatsa.py
 AutoMessenger_Whatsa/
 |-- AM_Whatsa.py              # Aplicacao principal
 |-- mensagens.json            # Templates de mensagens por modelo
+|-- assets/                   # Logo, favicon e recursos visuais
 |-- AutoMessengerWhatsa_Logs/ # Logs de execucao (ignorado pelo git)
 |-- README.md
 ```
@@ -101,5 +106,5 @@ AutoMessenger_Whatsa/
 ---
 
 <p align="center">
-  Desenvolvido para automacao de processos internos
+  Desenvolvido por <strong>Hugo L. Almeida</strong>
 </p>
