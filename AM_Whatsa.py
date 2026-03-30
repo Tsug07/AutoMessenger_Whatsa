@@ -7,6 +7,7 @@ import time
 import os
 import psutil
 import re
+from collections import OrderedDict
 import openpyxl
 import customtkinter as ctk
 from selenium import webdriver
@@ -58,6 +59,7 @@ perfil_selecionado = None  # Perfil do Chrome (1 ou 2)
 driver_agendamento = None  # Driver do Chrome para agendamento
 keep_alive_ativo = False  # Flag para keep-alive
 KEEP_ALIVE_INTERVALO = 30 * 60 * 1000  # 30 minutos em milissegundos
+INTERVALO_ENTRE_ENVIOS = 5 * 60  # 5 minutos entre cada envio (em segundos)
 
 # Modelos suportados
 MODELOS = {
@@ -103,6 +105,38 @@ def formatar_telefone_whatsapp(telefone):
         telefone = '55' + telefone
     return telefone
 
+def aguardar_intervalo_envio():
+    """Aguarda o intervalo entre envios com contagem regressiva no log."""
+    minutos = INTERVALO_ENTRE_ENVIOS // 60
+    segundos_restantes = INTERVALO_ENTRE_ENVIOS % 60
+    if segundos_restantes > 0:
+        atualizar_log(f"Aguardando {minutos}min {segundos_restantes}s até o próximo envio...")
+    else:
+        atualizar_log(f"Aguardando {minutos}min até o próximo envio...")
+    for restante in range(INTERVALO_ENTRE_ENVIOS, 0, -30):
+        if cancelar:
+            return
+        m = restante // 60
+        s = restante % 60
+        atualizar_log(f"  {m}min {s}s restantes...")
+        time.sleep(min(30, restante))
+
+
+def verificar_numero_invalido(driver, telefone_formatado):
+    """Verifica se apareceu o popup 'O número não está no WhatsApp' e clica em OK."""
+    SELETOR_BTN_OK = "#app > div > div > span:nth-child(3) > div > span > div > div > div > div > div > div.x78zum5.x8hhl5t.x13a6bvl.x13crsa5.x1gabggj.x18d9i69.xaso8d8.xp4054r.xuxw1ft > div > button"
+    try:
+        botao_ok = WebDriverWait(driver, 3).until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, SELETOR_BTN_OK))
+        )
+        botao_ok.click()
+        atualizar_log(f"Número {telefone_formatado} não está no WhatsApp! Pulando...", cor="vermelho")
+        time.sleep(1)
+        return True
+    except Exception:
+        return False
+
+
 def navegar_para_contato_whatsapp(driver, telefone):
     """Navega para o chat do WhatsApp Web usando URL direta.
     Se já estiver no WhatsApp Web, usa a URL direta do send. Caso contrário, passa pelo wa.me."""
@@ -119,6 +153,10 @@ def navegar_para_contato_whatsapp(driver, telefone):
             time.sleep(8)
 
             if not esperar_carregamento_completo(driver):
+                return False
+
+            # Verificar se o número não está no WhatsApp
+            if verificar_numero_invalido(driver, telefone_formatado):
                 return False
 
             atualizar_log(f"Chat aberto para {telefone_formatado}.", cor="azul")
@@ -163,14 +201,72 @@ def navegar_para_contato_whatsapp(driver, telefone):
         if not esperar_carregamento_completo(driver):
             return False
 
+        # Verificar se o número não está no WhatsApp
+        if verificar_numero_invalido(driver, telefone_formatado):
+            return False
+
         atualizar_log(f"Chat aberto para {telefone_formatado}.", cor="azul")
         return True
     except Exception as e:
         atualizar_log(f"Erro ao navegar para contato WhatsApp ({telefone}): {str(e)}", cor="vermelho")
         return False
 
-def enviar_mensagem(driver, telefone, mensagem, codigo, identificador, modelo=None, caminhos=None):
-    """Envia mensagem via WhatsApp Web navegando pela URL direta do contato."""
+MENSAGEM_AVISO_NUMERO = (
+    "Este número é utilizado apenas para envio de informações.\n"
+    "\n"
+    "❌ Não respondemos por aqui!\n"
+    "\n"
+    "📲 Para atendimento, entre em contato com nossa equipe pelo número oficial: (24) 99921-2350."
+)
+
+
+def digitar_e_enviar(driver, texto):
+    """Localiza a caixa de mensagem, digita o texto e clica em enviar. Retorna True se sucesso."""
+    caixa_msg = None
+    for tentativa in range(3):
+        try:
+            caixa_msg = WebDriverWait(driver, 15).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, '#main footer div.lexical-rich-text-input p'))
+            )
+            caixa_msg.click()
+            break
+        except Exception:
+            atualizar_log(f"Tentativa {tentativa + 1}/3: caixa de mensagem não encontrada, aguardando...", cor="azul")
+            time.sleep(5)
+    if not caixa_msg:
+        atualizar_log("Não foi possível encontrar a caixa de mensagem.", cor="vermelho")
+        return False
+
+    # Usar JavaScript para inserir texto (suporta emojis fora do BMP)
+    driver.execute_script(
+        """
+        var element = arguments[0];
+        element.focus();
+        var texto = arguments[1];
+        var linhas = texto.split('\\n');
+        for (var i = 0; i < linhas.length; i++) {
+            document.execCommand('insertText', false, linhas[i]);
+            if (i < linhas.length - 1) {
+                var br = new KeyboardEvent('keydown', {key: 'Enter', code: 'Enter', keyCode: 13, shiftKey: true, bubbles: true});
+                element.dispatchEvent(br);
+            }
+        }
+        """,
+        caixa_msg, texto.strip()
+    )
+    time.sleep(0.5)
+
+    botao_enviar = WebDriverWait(driver, 10).until(
+        EC.element_to_be_clickable((By.XPATH, '//*[@id="main"]/footer/div[1]/div/span/div/div/div/div[4]/div/span/button'))
+    )
+    botao_enviar.click()
+    time.sleep(3)
+    return True
+
+
+def enviar_mensagem(driver, telefone, mensagem, codigo, identificador, modelo=None, caminhos=None, enviar_aviso=True):
+    """Envia mensagem via WhatsApp Web navegando pela URL direta do contato.
+    Se enviar_aviso=True, envia a mensagem padrão de aviso após a mensagem principal."""
     try:
         if not navegar_para_contato_whatsapp(driver, telefone):
             atualizar_log(f"Falha ao abrir chat do WhatsApp para {telefone}.", cor="vermelho")
@@ -179,43 +275,23 @@ def enviar_mensagem(driver, telefone, mensagem, codigo, identificador, modelo=No
         tem_mensagem = mensagem and mensagem.strip()
 
         if tem_mensagem:
-            # Localizar a caixa de mensagem (campo de texto com placeholder)
-            caixa_msg = None
-            for tentativa in range(3):
-                try:
-                    caixa_msg = WebDriverWait(driver, 15).until(
-                        EC.element_to_be_clickable((By.CSS_SELECTOR, '#main footer div.lexical-rich-text-input p'))
-                    )
-                    caixa_msg.click()
-                    atualizar_log("Caixa de mensagem encontrada e clicada.")
-                    break
-                except Exception:
-                    atualizar_log(f"Tentativa {tentativa + 1}/3: caixa de mensagem não encontrada, aguardando...", cor="azul")
-                    time.sleep(5)
-            if not caixa_msg:
-                atualizar_log("Não foi possível encontrar a caixa de mensagem.", cor="vermelho")
-                return False
-
             if cancelar:
                 atualizar_log("Processamento cancelado!", cor="azul")
                 return False
 
-            # Inserir mensagem linha por linha (Shift+Enter para quebras, Enter final pelo botão)
-            linhas = mensagem.strip().split('\n')
-            for i, linha in enumerate(linhas):
-                caixa_msg.send_keys(linha)
-                if i < len(linhas) - 1:
-                    caixa_msg.send_keys(Keys.SHIFT + Keys.ENTER)
-            time.sleep(0.5)
-            atualizar_log("Mensagem inserida com sucesso.")
+            # Enviar mensagem principal
+            atualizar_log("Enviando mensagem principal...")
+            if not digitar_e_enviar(driver, mensagem):
+                return False
+            atualizar_log("Mensagem principal enviada!", cor="azul")
 
-            # Clicar no botão de enviar
-            botao_enviar = WebDriverWait(driver, 10).until(
-                EC.element_to_be_clickable((By.XPATH, '//*[@id="main"]/footer/div[1]/div/span/div/div/div/div[4]/div/span/button'))
-            )
-            botao_enviar.click()
-            atualizar_log("Mensagem enviada!", cor="azul")
-            time.sleep(3)
+            # Enviar mensagem padrão de aviso sobre o número (apenas no último envio do telefone)
+            if enviar_aviso:
+                atualizar_log("Enviando aviso de número...")
+                if not digitar_e_enviar(driver, MENSAGEM_AVISO_NUMERO):
+                    atualizar_log("Falha ao enviar mensagem de aviso.", cor="vermelho")
+                    return False
+                atualizar_log("Aviso de número enviado!", cor="azul")
         else:
             if not caminhos:
                 atualizar_log("Erro: Sem mensagem e sem arquivos para enviar.", cor="vermelho")
@@ -287,17 +363,17 @@ def abrir_chrome_teste_com_url(url):
     """Abre Chrome de teste copiando dados de sessão do perfil padrão para um perfil limpo."""
     import shutil
 
-    # Fechar TUDO relacionado ao Chrome
-    atualizar_log("Fechando todos os processos Chrome...", cor="azul")
-    os.system("taskkill /f /im chrome.exe >nul 2>&1")
-    os.system("taskkill /f /im chromedriver.exe >nul 2>&1")
-    for proc in psutil.process_iter(['name']):
-        try:
-            if proc.info['name'] and 'chrome' in proc.info['name'].lower():
-                proc.kill()
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            pass
-    time.sleep(5)
+    # Fechar TUDO relacionado ao Chrome (comentado para evitar fechar Chrome pessoal)
+    # atualizar_log("Fechando todos os processos Chrome...", cor="azul")
+    # os.system("taskkill /f /im chrome.exe >nul 2>&1")
+    # os.system("taskkill /f /im chromedriver.exe >nul 2>&1")
+    # for proc in psutil.process_iter(['name']):
+    #     try:
+    #         if proc.info['name'] and 'chrome' in proc.info['name'].lower():
+    #             proc.kill()
+    #     except (psutil.NoSuchProcess, psutil.AccessDenied):
+    #         pass
+    # time.sleep(5)
 
     # Copiar dados de sessão do perfil padrão para o perfil de teste
     perfil_padrao = os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\User Data\Default")
@@ -843,38 +919,114 @@ def processar_dados(excel, modelo, linha_inicial):
     if modelo == "Cobranca":
         codigos, nomes, telefones, valores, vencimentos, cartas = extrair_dados(dados, modelo)
         total_contatos = len(codigos)
-        for i, (cod, nome_emp, tel, p, v, carta) in enumerate(zip(codigos, nomes, telefones, valores, vencimentos, cartas)):
+        # Agrupar índices por telefone (preservando ordem de primeira aparição)
+        grupos_tel = OrderedDict()
+        for i, tel in enumerate(telefones):
+            tel_fmt = formatar_telefone_whatsapp(tel)
+            if tel_fmt not in grupos_tel:
+                grupos_tel[tel_fmt] = []
+            grupos_tel[tel_fmt].append(i)
+
+        idx_processado = 0
+        for tel_fmt, indices in grupos_tel.items():
             if cancelar:
                 atualizar_log(f"Processamento cancelado! Tempo decorrido: {formatar_tempo(tempo_inicio)}", cor="azul")
                 return
-            linha_atual = linha_inicial + i
-            porcentagem = ((i + 1) / total_contatos) * 100
-            atualizar_progresso(porcentagem, f"{linha_atual}/{total_linhas + linha_inicial - 1}")
-            atualizar_log(f"Linha: {linha_atual}")
-            atualizar_log(f"\nProcessando empresa {cod} - {nome_emp}: Tel: {tel}, Aviso nº: {carta}\n", cor="azul")
-            mensagem = mensagem_padrao(modelo, valores=p, vencimentos=v, carta=carta, nome_empresa=nome_emp)
-            if enviar_mensagem(driver, tel, mensagem, cod, nome_emp):
-                with open(log_file_path, 'a', encoding='utf-8') as f:
-                    f.write(f"[{datetime.now()}] Mensagem enviada para {tel}\n")
-            time.sleep(5)
+
+            tel_original = telefones[indices[0]]
+            atualizar_log(f"\nProcessando tel {tel_fmt}: {len(indices)} empresa(s)\n", cor="azul")
+
+            # Navegar para o contato uma única vez
+            if not navegar_para_contato_whatsapp(driver, tel_original):
+                atualizar_log(f"Falha ao abrir chat para {tel_fmt}.", cor="vermelho")
+                idx_processado += len(indices)
+                continue
+
+            # Enviar mensagem de cada empresa em sequência no mesmo chat
+            for idx in indices:
+                if cancelar:
+                    atualizar_log(f"Processamento cancelado! Tempo decorrido: {formatar_tempo(tempo_inicio)}", cor="azul")
+                    return
+                cod, nome_emp, tel, p, v, carta = codigos[idx], nomes[idx], telefones[idx], valores[idx], vencimentos[idx], cartas[idx]
+                idx_processado += 1
+                linha_atual = linha_inicial + idx
+                porcentagem = (idx_processado / total_contatos) * 100
+                atualizar_progresso(porcentagem, f"{linha_atual}/{total_linhas + linha_inicial - 1}")
+                atualizar_log(f"Linha: {linha_atual}")
+                atualizar_log(f"Empresa {cod} - {nome_emp}: Aviso nº: {carta}", cor="azul")
+                mensagem = mensagem_padrao(modelo, valores=p, vencimentos=v, carta=carta, nome_empresa=nome_emp)
+                atualizar_log("Enviando mensagem...")
+                if digitar_e_enviar(driver, mensagem):
+                    atualizar_log(f"Mensagem enviada para {nome_emp}!", cor="azul")
+                    with open(log_file_path, 'a', encoding='utf-8') as f:
+                        f.write(f"[{datetime.now()}] Mensagem enviada para {tel} - {cod} {nome_emp}\n")
+                else:
+                    atualizar_log(f"Falha ao enviar mensagem para {nome_emp}.", cor="vermelho")
+                time.sleep(3)
+
+            # Enviar aviso de número apenas uma vez, após todas as mensagens do telefone
+            atualizar_log("Enviando aviso de número...")
+            if digitar_e_enviar(driver, MENSAGEM_AVISO_NUMERO):
+                atualizar_log("Aviso de número enviado!", cor="azul")
+            else:
+                atualizar_log("Falha ao enviar aviso de número.", cor="vermelho")
+            aguardar_intervalo_envio()
 
     elif modelo == "ComuniCertificado":
         codigos, nomes, telefones, cnpjs, vencimentos, cartas = extrair_dados(dados, modelo)
         total_contatos = len(codigos)
-        for i, (cod, nome_emp, tel, c, v, carta) in enumerate(zip(codigos, nomes, telefones, cnpjs, vencimentos, cartas)):
+        # Agrupar índices por telefone (preservando ordem de primeira aparição)
+        grupos_tel = OrderedDict()
+        for i, tel in enumerate(telefones):
+            tel_fmt = formatar_telefone_whatsapp(tel)
+            if tel_fmt not in grupos_tel:
+                grupos_tel[tel_fmt] = []
+            grupos_tel[tel_fmt].append(i)
+
+        idx_processado = 0
+        for tel_fmt, indices in grupos_tel.items():
             if cancelar:
                 atualizar_log(f"Processamento cancelado! Tempo decorrido: {formatar_tempo(tempo_inicio)}", cor="azul")
                 return
-            linha_atual = linha_inicial + i
-            porcentagem = ((i + 1) / total_contatos) * 100
-            atualizar_progresso(porcentagem, f"{linha_atual}/{total_linhas + linha_inicial - 1}")
-            atualizar_log(f"Linha: {linha_atual}")
-            atualizar_log(f"\nProcessando empresa {cod} - {nome_emp}: Tel: {tel}, Aviso nº: {carta}\n", cor="azul")
-            mensagem = mensagem_padrao(modelo, vencimentos=v, carta=carta, cnpj=c, nome_empresa=nome_emp)
-            if enviar_mensagem(driver, tel, mensagem, cod, nome_emp):
-                with open(log_file_path, 'a', encoding='utf-8') as f:
-                    f.write(f"[{datetime.now()}] Mensagem enviada para {tel}\n")
-            time.sleep(5)
+
+            tel_original = telefones[indices[0]]
+            atualizar_log(f"\nProcessando tel {tel_fmt}: {len(indices)} empresa(s)\n", cor="azul")
+
+            # Navegar para o contato uma única vez
+            if not navegar_para_contato_whatsapp(driver, tel_original):
+                atualizar_log(f"Falha ao abrir chat para {tel_fmt}.", cor="vermelho")
+                idx_processado += len(indices)
+                continue
+
+            # Enviar mensagem de cada empresa em sequência no mesmo chat
+            for idx in indices:
+                if cancelar:
+                    atualizar_log(f"Processamento cancelado! Tempo decorrido: {formatar_tempo(tempo_inicio)}", cor="azul")
+                    return
+                cod, nome_emp, tel, c, v, carta = codigos[idx], nomes[idx], telefones[idx], cnpjs[idx], vencimentos[idx], cartas[idx]
+                idx_processado += 1
+                linha_atual = linha_inicial + idx
+                porcentagem = (idx_processado / total_contatos) * 100
+                atualizar_progresso(porcentagem, f"{linha_atual}/{total_linhas + linha_inicial - 1}")
+                atualizar_log(f"Linha: {linha_atual}")
+                atualizar_log(f"Empresa {cod} - {nome_emp}: Aviso nº: {carta}", cor="azul")
+                mensagem = mensagem_padrao(modelo, vencimentos=v, carta=carta, cnpj=c, nome_empresa=nome_emp)
+                atualizar_log("Enviando mensagem...")
+                if digitar_e_enviar(driver, mensagem):
+                    atualizar_log(f"Mensagem enviada para {nome_emp}!", cor="azul")
+                    with open(log_file_path, 'a', encoding='utf-8') as f:
+                        f.write(f"[{datetime.now()}] Mensagem enviada para {tel} - {cod} {nome_emp}\n")
+                else:
+                    atualizar_log(f"Falha ao enviar mensagem para {nome_emp}.", cor="vermelho")
+                time.sleep(3)
+
+            # Enviar aviso de número apenas uma vez, após todas as mensagens do telefone
+            atualizar_log("Enviando aviso de número...")
+            if digitar_e_enviar(driver, MENSAGEM_AVISO_NUMERO):
+                atualizar_log("Aviso de número enviado!", cor="azul")
+            else:
+                atualizar_log("Falha ao enviar aviso de número.", cor="vermelho")
+            aguardar_intervalo_envio()
 
     elif modelo == "ONE":
         telefones_lista, empresas_lista, caminhos_lista = extrair_dados(dados, modelo)
@@ -897,7 +1049,7 @@ def processar_dados(excel, modelo, linha_inicial):
             if enviar_mensagem(driver, tel, mensagem, tel, identificador, modelo, caminhos):
                 with open(log_file_path, 'a', encoding='utf-8') as f:
                     f.write(f"[{datetime.now()}] Mensagem enviada para {tel} com {num_empresas} arquivos\n")
-            time.sleep(5)
+            aguardar_intervalo_envio()
             linha_atual += num_empresas
 
     elif modelo == "ALL_info":
@@ -924,7 +1076,7 @@ def processar_dados(excel, modelo, linha_inicial):
             if enviar_mensagem(driver, tel, mensagem, tel, identificador, modelo):
                 with open(log_file_path, 'a', encoding='utf-8') as f:
                     f.write(f"[{datetime.now()}] Mensagem enviada para {tel} com {num_empresas} empresa(s){log_extra}\n")
-            time.sleep(5)
+            aguardar_intervalo_envio()
             linha_atual += num_empresas
 
     else:  # Modelo ALL
@@ -960,7 +1112,7 @@ def processar_dados(excel, modelo, linha_inicial):
                 with open(log_file_path, 'a', encoding='utf-8') as f:
                     anexo_info = " + anexo" if arquivo_anexo else ""
                     f.write(f"[{datetime.now()}] Mensagem enviada para {tel} com {num_empresas} empresa(s){anexo_info}\n")
-            time.sleep(5)
+            aguardar_intervalo_envio()
             linha_atual += num_empresas
 
     atualizar_progresso(100, "Concluído")
@@ -1053,6 +1205,9 @@ def processar_dados_agendado(excel, modelo, linha_inicial):
     if modelo == "Cobranca":
         codigos, nomes, telefones, valores, vencimentos, cartas = extrair_dados(dados, modelo)
         total_contatos = len(codigos)
+        ultima_ocorrencia_tel = {}
+        for i, tel in enumerate(telefones):
+            ultima_ocorrencia_tel[tel] = i
         for i, (cod, nome_emp, tel, p, v, carta) in enumerate(zip(codigos, nomes, telefones, valores, vencimentos, cartas)):
             if cancelar:
                 atualizar_log("Processamento cancelado!", cor="azul")
@@ -1064,14 +1219,18 @@ def processar_dados_agendado(excel, modelo, linha_inicial):
             atualizar_log(f"Linha: {linha_atual}")
             atualizar_log(f"\nProcessando empresa {cod} - {nome_emp}: Tel: {tel}, Aviso nº: {carta}\n", cor="azul")
             mensagem = mensagem_padrao(modelo, valores=p, vencimentos=v, carta=carta, nome_empresa=nome_emp)
-            if enviar_mensagem(driver, tel, mensagem, cod, nome_emp):
+            eh_ultimo = (ultima_ocorrencia_tel[tel] == i)
+            if enviar_mensagem(driver, tel, mensagem, cod, nome_emp, enviar_aviso=eh_ultimo):
                 with open(log_file_path, 'a', encoding='utf-8') as f:
                     f.write(f"[{datetime.now()}] Mensagem enviada para {tel}\n")
-            time.sleep(5)
+            aguardar_intervalo_envio()
 
     elif modelo == "ComuniCertificado":
         codigos, nomes, telefones, cnpjs, vencimentos, cartas = extrair_dados(dados, modelo)
         total_contatos = len(codigos)
+        ultima_ocorrencia_tel = {}
+        for i, tel in enumerate(telefones):
+            ultima_ocorrencia_tel[tel] = i
         for i, (cod, nome_emp, tel, c, v, carta) in enumerate(zip(codigos, nomes, telefones, cnpjs, vencimentos, cartas)):
             if cancelar:
                 atualizar_log("Processamento cancelado!", cor="azul")
@@ -1083,10 +1242,11 @@ def processar_dados_agendado(excel, modelo, linha_inicial):
             atualizar_log(f"Linha: {linha_atual}")
             atualizar_log(f"\nProcessando empresa {cod} - {nome_emp}: Tel: {tel}, Aviso nº: {carta}\n", cor="azul")
             mensagem = mensagem_padrao(modelo, vencimentos=v, carta=carta, cnpj=c, nome_empresa=nome_emp)
-            if enviar_mensagem(driver, tel, mensagem, cod, nome_emp):
+            eh_ultimo = (ultima_ocorrencia_tel[tel] == i)
+            if enviar_mensagem(driver, tel, mensagem, cod, nome_emp, enviar_aviso=eh_ultimo):
                 with open(log_file_path, 'a', encoding='utf-8') as f:
                     f.write(f"[{datetime.now()}] Mensagem enviada para {tel}\n")
-            time.sleep(5)
+            aguardar_intervalo_envio()
 
     elif modelo == "ONE":
         telefones_lista, empresas_lista, caminhos_lista = extrair_dados(dados, modelo)
@@ -1110,7 +1270,7 @@ def processar_dados_agendado(excel, modelo, linha_inicial):
             if enviar_mensagem(driver, tel, mensagem, tel, identificador, modelo, caminhos):
                 with open(log_file_path, 'a', encoding='utf-8') as f:
                     f.write(f"[{datetime.now()}] Mensagem enviada para {tel} com {num_empresas} arquivos\n")
-            time.sleep(5)
+            aguardar_intervalo_envio()
             linha_atual += num_empresas
 
     elif modelo == "ALL_info":
@@ -1138,7 +1298,7 @@ def processar_dados_agendado(excel, modelo, linha_inicial):
             if enviar_mensagem(driver, tel, mensagem, tel, identificador, modelo):
                 with open(log_file_path, 'a', encoding='utf-8') as f:
                     f.write(f"[{datetime.now()}] Mensagem enviada para {tel} com {num_empresas} empresa(s){log_extra}\n")
-            time.sleep(5)
+            aguardar_intervalo_envio()
             linha_atual += num_empresas
 
     else:  # Modelo ALL
@@ -1175,7 +1335,7 @@ def processar_dados_agendado(excel, modelo, linha_inicial):
                 with open(log_file_path, 'a', encoding='utf-8') as f:
                     anexo_info = " + anexo" if arquivo_anexo else ""
                     f.write(f"[{datetime.now()}] Mensagem enviada para {tel} com {num_empresas} empresa(s){anexo_info}\n")
-            time.sleep(5)
+            aguardar_intervalo_envio()
             linha_atual += num_empresas
 
     # Exibir tempo de processamento
