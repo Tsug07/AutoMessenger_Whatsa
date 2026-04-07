@@ -4,6 +4,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext
 import threading
 import time
+import random
 import os
 import psutil
 import re
@@ -19,6 +20,8 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 from datetime import datetime
+import urllib.request
+import urllib.error
 
 """
 AutoMessenger WhatsApp - Ferramenta de automação para envio de mensagens via WhatsApp Web.
@@ -59,7 +62,8 @@ perfil_selecionado = None  # Perfil do Chrome (1 ou 2)
 driver_agendamento = None  # Driver do Chrome para agendamento
 keep_alive_ativo = False  # Flag para keep-alive
 KEEP_ALIVE_INTERVALO = 30 * 60 * 1000  # 30 minutos em milissegundos
-INTERVALO_ENTRE_ENVIOS = 5 * 60  # 5 minutos entre cada envio (em segundos)
+INTERVALO_MIN = 7 * 60  # Mínimo 7 minutos entre cada envio (em segundos)
+INTERVALO_MAX = 10 * 60  # Máximo 10 minutos entre cada envio (em segundos)
 
 # Modelos suportados
 MODELOS = {
@@ -106,14 +110,15 @@ def formatar_telefone_whatsapp(telefone):
     return telefone
 
 def aguardar_intervalo_envio():
-    """Aguarda o intervalo entre envios com contagem regressiva no log."""
-    minutos = INTERVALO_ENTRE_ENVIOS // 60
-    segundos_restantes = INTERVALO_ENTRE_ENVIOS % 60
+    """Aguarda um intervalo aleatório entre envios com contagem regressiva no log."""
+    intervalo = random.randint(INTERVALO_MIN, INTERVALO_MAX)
+    minutos = intervalo // 60
+    segundos_restantes = intervalo % 60
     if segundos_restantes > 0:
         atualizar_log(f"Aguardando {minutos}min {segundos_restantes}s até o próximo envio...")
     else:
         atualizar_log(f"Aguardando {minutos}min até o próximo envio...")
-    for restante in range(INTERVALO_ENTRE_ENVIOS, 0, -30):
+    for restante in range(intervalo, 0, -30):
         if cancelar:
             return
         m = restante // 60
@@ -237,36 +242,36 @@ def digitar_e_enviar(driver, texto):
         atualizar_log("Não foi possível encontrar a caixa de mensagem.", cor="vermelho")
         return False
 
-    # Usar JavaScript para inserir texto (suporta emojis fora do BMP)
-    driver.execute_script(
-        """
-        var element = arguments[0];
-        element.focus();
-        var texto = arguments[1];
-        var linhas = texto.split('\\n');
-        for (var i = 0; i < linhas.length; i++) {
-            document.execCommand('insertText', false, linhas[i]);
-            if (i < linhas.length - 1) {
+    # Digitar texto caractere por caractere para simular digitação humana
+    texto_limpo = texto.strip()
+    driver.execute_script("arguments[0].focus();", caixa_msg)
+    for char in texto_limpo:
+        if char == '\n':
+            # Shift+Enter para nova linha
+            driver.execute_script(
+                """
+                var element = arguments[0];
                 var br = new KeyboardEvent('keydown', {key: 'Enter', code: 'Enter', keyCode: 13, shiftKey: true, bubbles: true});
                 element.dispatchEvent(br);
-            }
-        }
-        """,
-        caixa_msg, texto.strip()
-    )
-    time.sleep(0.5)
+                """,
+                caixa_msg
+            )
+        else:
+            driver.execute_script("document.execCommand('insertText', false, arguments[0]);", char)
+        time.sleep(random.uniform(0.02, 0.05))
+    time.sleep(random.uniform(0.8, 2.0))
 
     botao_enviar = WebDriverWait(driver, 10).until(
         EC.element_to_be_clickable((By.XPATH, '//*[@id="main"]/footer/div[1]/div/span/div/div/div/div[4]/div/span/button'))
     )
+    time.sleep(random.uniform(0.3, 1.0))
     botao_enviar.click()
-    time.sleep(3)
+    time.sleep(random.uniform(2.0, 4.0))
     return True
 
 
 def enviar_mensagem(driver, telefone, mensagem, codigo, identificador, modelo=None, caminhos=None, enviar_aviso=True):
-    """Envia mensagem via WhatsApp Web navegando pela URL direta do contato.
-    Se enviar_aviso=True, envia a mensagem padrão de aviso após a mensagem principal."""
+    """Envia mensagem via WhatsApp Web navegando pela URL direta do contato."""
     try:
         if not navegar_para_contato_whatsapp(driver, telefone):
             atualizar_log(f"Falha ao abrir chat do WhatsApp para {telefone}.", cor="vermelho")
@@ -279,19 +284,11 @@ def enviar_mensagem(driver, telefone, mensagem, codigo, identificador, modelo=No
                 atualizar_log("Processamento cancelado!", cor="azul")
                 return False
 
-            # Enviar mensagem principal
-            atualizar_log("Enviando mensagem principal...")
+            # Enviar mensagem (já inclui o aviso de número no final)
+            atualizar_log("Enviando mensagem...")
             if not digitar_e_enviar(driver, mensagem):
                 return False
-            atualizar_log("Mensagem principal enviada!", cor="azul")
-
-            # Enviar mensagem padrão de aviso sobre o número (apenas no último envio do telefone)
-            if enviar_aviso:
-                atualizar_log("Enviando aviso de número...")
-                if not digitar_e_enviar(driver, MENSAGEM_AVISO_NUMERO):
-                    atualizar_log("Falha ao enviar mensagem de aviso.", cor="vermelho")
-                    return False
-                atualizar_log("Aviso de número enviado!", cor="azul")
+            atualizar_log("Mensagem enviada!", cor="azul")
         else:
             if not caminhos:
                 atualizar_log("Erro: Sem mensagem e sem arquivos para enviar.", cor="vermelho")
@@ -346,10 +343,16 @@ def abrir_chrome_com_url(url):
     chrome_options.add_argument("--enable-javascript")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    chrome_options.add_experimental_option("useAutomationExtension", False)
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
 
     service = Service(ChromeDriverManager().install())
     try:
         driver = webdriver.Chrome(service=service, options=chrome_options)
+        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+            "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        })
         driver.set_page_load_timeout(180)
         driver.get(url)
         atualizar_log(f"Chrome aberto com a URL: {url}")
@@ -376,7 +379,7 @@ def abrir_chrome_teste_com_url(url):
     # time.sleep(5)
 
     # Copiar dados de sessão do perfil padrão para o perfil de teste
-    perfil_padrao = os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\User Data\Default")
+    perfil_padrao = os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\User Data\Profile 1")
     perfil_teste = r"C:\PerfisChrome\automacao_teste\Default"
     os.makedirs(perfil_teste, exist_ok=True)
 
@@ -423,10 +426,16 @@ def abrir_chrome_teste_com_url(url):
     chrome_options.add_argument("--enable-javascript")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    chrome_options.add_experimental_option("useAutomationExtension", False)
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
 
     service = Service(ChromeDriverManager().install())
     try:
         driver = webdriver.Chrome(service=service, options=chrome_options)
+        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+            "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        })
         driver.set_page_load_timeout(180)
         driver.get(url)
         atualizar_log(f"Chrome aberto com perfil de teste. URL: {url}", cor="verde")
@@ -831,6 +840,8 @@ def mensagem_padrao(modelo, pessoas=None, vencimentos=None, valores=None, carta=
                             msg = msg.format(nome=nome_unico)
                     except KeyError:
                         pass
+    # Anexar aviso de número ao final da mensagem
+    msg += "\n\n" + MENSAGEM_AVISO_NUMERO
     return msg
 
 # Funções de Interface
@@ -896,6 +907,33 @@ def formatar_tempo(tempo_inicio):
     else:
         return f"{segundos}s"
 
+def estimar_tempo(num_envios, num_mensagens_extra=0):
+    """Estima o tempo total de processamento baseado no número de envios (intervalos).
+    num_envios: quantas vezes aguardar_intervalo_envio() será chamado
+    num_mensagens_extra: mensagens extras dentro do mesmo chat (ex: múltiplas empresas no mesmo tel)
+    """
+    media_intervalo = (INTERVALO_MIN + INTERVALO_MAX) / 2
+    media_envio = 5.0  # tempo médio por mensagem (navegação + digitação + envio)
+    media_extra = 3.5  # tempo médio por mensagem extra no mesmo chat
+
+    total_min = (num_envios * (INTERVALO_MIN + media_envio) + num_mensagens_extra * media_extra) / 60
+    total_max = (num_envios * (INTERVALO_MAX + media_envio) + num_mensagens_extra * media_extra) / 60
+    total_media = (total_min + total_max) / 2
+
+    def fmt(minutos):
+        h = int(minutos // 60)
+        m = int(minutos % 60)
+        if h > 0:
+            return f"{h}h {m}min"
+        return f"{m}min"
+
+    atualizar_log(f"=" * 50, cor="azul")
+    atualizar_log(f"ESTIMATIVA DE TEMPO", cor="azul")
+    atualizar_log(f"Contatos/envios: {num_envios}" + (f" (+{num_mensagens_extra} msgs extras)" if num_mensagens_extra else ""), cor="azul")
+    atualizar_log(f"Mínimo: ~{fmt(total_min)} | Média: ~{fmt(total_media)} | Máximo: ~{fmt(total_max)}", cor="azul")
+    atualizar_log(f"=" * 50, cor="azul")
+
+
 def processar_dados(excel, modelo, linha_inicial):
     # Iniciar timer de processamento
     tempo_inicio = time.time()
@@ -926,6 +964,9 @@ def processar_dados(excel, modelo, linha_inicial):
             if tel_fmt not in grupos_tel:
                 grupos_tel[tel_fmt] = []
             grupos_tel[tel_fmt].append(i)
+
+        num_grupos = len(grupos_tel)
+        estimar_tempo(num_grupos, total_contatos - num_grupos)
 
         idx_processado = 0
         for tel_fmt, indices in grupos_tel.items():
@@ -964,12 +1005,6 @@ def processar_dados(excel, modelo, linha_inicial):
                     atualizar_log(f"Falha ao enviar mensagem para {nome_emp}.", cor="vermelho")
                 time.sleep(3)
 
-            # Enviar aviso de número apenas uma vez, após todas as mensagens do telefone
-            atualizar_log("Enviando aviso de número...")
-            if digitar_e_enviar(driver, MENSAGEM_AVISO_NUMERO):
-                atualizar_log("Aviso de número enviado!", cor="azul")
-            else:
-                atualizar_log("Falha ao enviar aviso de número.", cor="vermelho")
             aguardar_intervalo_envio()
 
     elif modelo == "ComuniCertificado":
@@ -982,6 +1017,9 @@ def processar_dados(excel, modelo, linha_inicial):
             if tel_fmt not in grupos_tel:
                 grupos_tel[tel_fmt] = []
             grupos_tel[tel_fmt].append(i)
+
+        num_grupos = len(grupos_tel)
+        estimar_tempo(num_grupos, total_contatos - num_grupos)
 
         idx_processado = 0
         for tel_fmt, indices in grupos_tel.items():
@@ -1020,17 +1058,12 @@ def processar_dados(excel, modelo, linha_inicial):
                     atualizar_log(f"Falha ao enviar mensagem para {nome_emp}.", cor="vermelho")
                 time.sleep(3)
 
-            # Enviar aviso de número apenas uma vez, após todas as mensagens do telefone
-            atualizar_log("Enviando aviso de número...")
-            if digitar_e_enviar(driver, MENSAGEM_AVISO_NUMERO):
-                atualizar_log("Aviso de número enviado!", cor="azul")
-            else:
-                atualizar_log("Falha ao enviar aviso de número.", cor="vermelho")
             aguardar_intervalo_envio()
 
     elif modelo == "ONE":
         telefones_lista, empresas_lista, caminhos_lista = extrair_dados(dados, modelo)
         total_contatos = len(telefones_lista)
+        estimar_tempo(total_contatos)
         linha_atual = linha_inicial
         for i, (tel, empresas, caminhos) in enumerate(zip(telefones_lista, empresas_lista, caminhos_lista)):
             if cancelar:
@@ -1055,6 +1088,7 @@ def processar_dados(excel, modelo, linha_inicial):
     elif modelo == "ALL_info":
         telefones_lista, empresas_lista, extras = extrair_dados(dados, modelo)
         total_contatos = len(telefones_lista)
+        estimar_tempo(total_contatos)
         linha_atual = linha_inicial
         for i, (tel, empresas, extra_info) in enumerate(zip(telefones_lista, empresas_lista, extras)):
             if cancelar:
@@ -1082,6 +1116,7 @@ def processar_dados(excel, modelo, linha_inicial):
     else:  # Modelo ALL
         telefones_lista, empresas_lista = extrair_dados(dados, modelo)
         total_contatos = len(telefones_lista)
+        estimar_tempo(total_contatos)
         linha_atual = linha_inicial
 
         arquivo_anexo = None
@@ -1141,7 +1176,24 @@ def fechar_programa():
 
     janela.quit()
 
+def notificar_discord():
+    """Envia notificação ao Discord via webhook informando que o processo foi concluído."""
+    webhook_url = "https://discord.com/api/webhooks/1488246809338970226/RN3SrywNyY3qLyrNt2Fz9ovI3rU7xEbqcj8jwLmWsSmpbau6LhgUImM8Ibea5StTV8Vp"
+    payload = json.dumps({"content": "**AutoMessenger WhatsApp** - Processo de envio finalizado com sucesso!"}).encode("utf-8")
+    req = urllib.request.Request(webhook_url, data=payload, headers={"Content-Type": "application/json"})
+    try:
+        urllib.request.urlopen(req)
+        atualizar_log("Notificação enviada ao Discord.", cor="verde")
+    except urllib.error.HTTPError as e:
+        if e.code == 403:
+            atualizar_log("Falha ao notificar Discord: Webhook inválido ou deletado (403 Forbidden). Atualize a URL do webhook.", cor="vermelho")
+        else:
+            atualizar_log(f"Falha ao notificar Discord: HTTP {e.code} - {e.reason}", cor="vermelho")
+    except Exception as e:
+        atualizar_log(f"Falha ao notificar Discord: {e}", cor="vermelho")
+
 def finalizar_programa():
+    notificar_discord()
     messagebox.showinfo("Processo Finalizado", "Processamento concluído!")
     botao_fechar.configure(state="normal")
     botao_iniciar.configure(state="normal")
@@ -1151,6 +1203,7 @@ def finalizar_programa():
 def finalizar_programa_agendado():
     """Finaliza o programa após processamento agendado e fecha o Chrome"""
     global driver_agendamento
+    notificar_discord()
     messagebox.showinfo("Processo Finalizado", "Processamento agendado concluído!")
     botao_fechar.configure(state="normal")
     botao_iniciar.configure(state="normal")
@@ -1208,6 +1261,7 @@ def processar_dados_agendado(excel, modelo, linha_inicial):
         ultima_ocorrencia_tel = {}
         for i, tel in enumerate(telefones):
             ultima_ocorrencia_tel[tel] = i
+        estimar_tempo(total_contatos)
         for i, (cod, nome_emp, tel, p, v, carta) in enumerate(zip(codigos, nomes, telefones, valores, vencimentos, cartas)):
             if cancelar:
                 atualizar_log("Processamento cancelado!", cor="azul")
@@ -1231,6 +1285,7 @@ def processar_dados_agendado(excel, modelo, linha_inicial):
         ultima_ocorrencia_tel = {}
         for i, tel in enumerate(telefones):
             ultima_ocorrencia_tel[tel] = i
+        estimar_tempo(total_contatos)
         for i, (cod, nome_emp, tel, c, v, carta) in enumerate(zip(codigos, nomes, telefones, cnpjs, vencimentos, cartas)):
             if cancelar:
                 atualizar_log("Processamento cancelado!", cor="azul")
@@ -1251,6 +1306,7 @@ def processar_dados_agendado(excel, modelo, linha_inicial):
     elif modelo == "ONE":
         telefones_lista, empresas_lista, caminhos_lista = extrair_dados(dados, modelo)
         total_contatos = len(telefones_lista)
+        estimar_tempo(total_contatos)
         linha_atual = linha_inicial
         for i, (tel, empresas, caminhos) in enumerate(zip(telefones_lista, empresas_lista, caminhos_lista)):
             if cancelar:
@@ -1276,6 +1332,7 @@ def processar_dados_agendado(excel, modelo, linha_inicial):
     elif modelo == "ALL_info":
         telefones_lista, empresas_lista, extras = extrair_dados(dados, modelo)
         total_contatos = len(telefones_lista)
+        estimar_tempo(total_contatos)
         linha_atual = linha_inicial
         for i, (tel, empresas, extra_info) in enumerate(zip(telefones_lista, empresas_lista, extras)):
             if cancelar:
@@ -1304,6 +1361,7 @@ def processar_dados_agendado(excel, modelo, linha_inicial):
     else:  # Modelo ALL
         telefones_lista, empresas_lista = extrair_dados(dados, modelo)
         total_contatos = len(telefones_lista)
+        estimar_tempo(total_contatos)
         linha_atual = linha_inicial
 
         arquivo_anexo = None
@@ -1694,10 +1752,16 @@ def abrir_chrome_agendamento():
     chrome_options.add_argument("--enable-javascript")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    chrome_options.add_experimental_option("useAutomationExtension", False)
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
 
     service = Service(ChromeDriverManager().install())
     try:
         driver_agendamento = webdriver.Chrome(service=service, options=chrome_options)
+        driver_agendamento.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+            "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        })
         driver_agendamento.set_page_load_timeout(180)
         driver_agendamento.get(url)
         atualizar_log(f"Chrome aberto no WhatsApp Web.", cor="verde")
