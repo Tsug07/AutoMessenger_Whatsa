@@ -20,8 +20,9 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 from datetime import datetime
-import urllib.request
-import urllib.error
+import requests
+from dotenv import load_dotenv
+load_dotenv()
 
 """
 AutoMessenger WhatsApp - Ferramenta de automação para envio de mensagens via WhatsApp Web.
@@ -969,6 +970,7 @@ def processar_dados(excel, modelo, linha_inicial):
         estimar_tempo(num_grupos, total_contatos - num_grupos)
 
         idx_processado = 0
+        cobranca_enviados = 0
         for tel_fmt, indices in grupos_tel.items():
             if cancelar:
                 atualizar_log(f"Processamento cancelado! Tempo decorrido: {formatar_tempo(tempo_inicio)}", cor="azul")
@@ -999,6 +1001,7 @@ def processar_dados(excel, modelo, linha_inicial):
                 atualizar_log("Enviando mensagem...")
                 if digitar_e_enviar(driver, mensagem):
                     atualizar_log(f"Mensagem enviada para {nome_emp}!", cor="azul")
+                    cobranca_enviados += 1
                     with open(log_file_path, 'a', encoding='utf-8') as f:
                         f.write(f"[{datetime.now()}] Mensagem enviada para {tel} - {cod} {nome_emp}\n")
                 else:
@@ -1006,6 +1009,8 @@ def processar_dados(excel, modelo, linha_inicial):
                 time.sleep(3)
 
             aguardar_intervalo_envio()
+
+        notificar_discord_cobranca(cobranca_enviados)
 
     elif modelo == "ComuniCertificado":
         codigos, nomes, telefones, cnpjs, vencimentos, cartas = extrair_dados(dados, modelo)
@@ -1022,6 +1027,7 @@ def processar_dados(excel, modelo, linha_inicial):
         estimar_tempo(num_grupos, total_contatos - num_grupos)
 
         idx_processado = 0
+        certificado_enviados = 0
         for tel_fmt, indices in grupos_tel.items():
             if cancelar:
                 atualizar_log(f"Processamento cancelado! Tempo decorrido: {formatar_tempo(tempo_inicio)}", cor="azul")
@@ -1052,6 +1058,7 @@ def processar_dados(excel, modelo, linha_inicial):
                 atualizar_log("Enviando mensagem...")
                 if digitar_e_enviar(driver, mensagem):
                     atualizar_log(f"Mensagem enviada para {nome_emp}!", cor="azul")
+                    certificado_enviados += 1
                     with open(log_file_path, 'a', encoding='utf-8') as f:
                         f.write(f"[{datetime.now()}] Mensagem enviada para {tel} - {cod} {nome_emp}\n")
                 else:
@@ -1059,6 +1066,8 @@ def processar_dados(excel, modelo, linha_inicial):
                 time.sleep(3)
 
             aguardar_intervalo_envio()
+
+        notificar_discord_certificado(certificado_enviados)
 
     elif modelo == "ONE":
         telefones_lista, empresas_lista, caminhos_lista = extrair_dados(dados, modelo)
@@ -1179,18 +1188,59 @@ def fechar_programa():
 def notificar_discord():
     """Envia notificação ao Discord via webhook informando que o processo foi concluído."""
     webhook_url = "https://discord.com/api/webhooks/1488246809338970226/RN3SrywNyY3qLyrNt2Fz9ovI3rU7xEbqcj8jwLmWsSmpbau6LhgUImM8Ibea5StTV8Vp"
-    payload = json.dumps({"content": "**AutoMessenger WhatsApp** - Processo de envio finalizado com sucesso!"}).encode("utf-8")
-    req = urllib.request.Request(webhook_url, data=payload, headers={"Content-Type": "application/json"})
+    payload = {"content": "**AutoMessenger WhatsApp** - Processo de envio finalizado com sucesso!"}
     try:
-        urllib.request.urlopen(req)
-        atualizar_log("Notificação enviada ao Discord.", cor="verde")
-    except urllib.error.HTTPError as e:
-        if e.code == 403:
+        response = requests.post(webhook_url, json=payload)
+        if response.status_code == 204:
+            atualizar_log("Notificação enviada ao Discord.", cor="verde")
+        elif response.status_code == 403:
             atualizar_log("Falha ao notificar Discord: Webhook inválido ou deletado (403 Forbidden). Atualize a URL do webhook.", cor="vermelho")
         else:
-            atualizar_log(f"Falha ao notificar Discord: HTTP {e.code} - {e.reason}", cor="vermelho")
+            atualizar_log(f"Falha ao notificar Discord: HTTP {response.status_code} - {response.text}", cor="vermelho")
     except Exception as e:
         atualizar_log(f"Falha ao notificar Discord: {e}", cor="vermelho")
+
+def notificar_discord_cobranca(total_enviados):
+    """Envia notificação ao Discord via webhook específico de cobrança."""
+    webhook_url = os.getenv("DISCORD_WEBHOOK_COBRANCA")
+    if not webhook_url:
+        atualizar_log("Webhook de cobrança não configurado no .env.", cor="vermelho")
+        return
+    cargo = "<@&1299045096146079795>"
+    payload = {
+        "content": f"{cargo} **AutoMessenger WhatsApp - Cobrança** - Mensagens de cobrança enviadas! Total: {total_enviados} mensagem(ns) enviada(s)."
+    }
+    try:
+        response = requests.post(webhook_url, json=payload)
+        if response.status_code == 204:
+            atualizar_log("Notificação de cobrança enviada ao Discord.", cor="verde")
+        elif response.status_code == 403:
+            atualizar_log("Falha ao notificar Discord cobrança: Webhook inválido ou deletado (403 Forbidden).", cor="vermelho")
+        else:
+            atualizar_log(f"Falha ao notificar Discord cobrança: HTTP {response.status_code} - {response.text}", cor="vermelho")
+    except Exception as e:
+        atualizar_log(f"Falha ao notificar Discord cobrança: {e}", cor="vermelho")
+
+def notificar_discord_certificado(total_enviados):
+    """Envia notificação ao Discord via webhook específico de certificado."""
+    webhook_url = os.getenv("DISCORD_WEBHOOK_CERTIFICADO")
+    if not webhook_url:
+        atualizar_log("Webhook de certificado não configurado no .env.", cor="vermelho")
+        return
+    cargo = "<@&1299045050881151006>"
+    payload = {
+        "content": f"{cargo} **AutoMessenger WhatsApp - ComuniCertificado** - Mensagens de certificado enviadas! Total: {total_enviados} mensagem(ns) enviada(s)."
+    }
+    try:
+        response = requests.post(webhook_url, json=payload)
+        if response.status_code == 204:
+            atualizar_log("Notificação de certificado enviada ao Discord.", cor="verde")
+        elif response.status_code == 403:
+            atualizar_log("Falha ao notificar Discord certificado: Webhook inválido ou deletado (403 Forbidden).", cor="vermelho")
+        else:
+            atualizar_log(f"Falha ao notificar Discord certificado: HTTP {response.status_code} - {response.text}", cor="vermelho")
+    except Exception as e:
+        atualizar_log(f"Falha ao notificar Discord certificado: {e}", cor="vermelho")
 
 def finalizar_programa():
     notificar_discord()
