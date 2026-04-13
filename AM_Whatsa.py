@@ -1185,21 +1185,6 @@ def fechar_programa():
 
     janela.quit()
 
-def notificar_discord():
-    """Envia notificação ao Discord via webhook informando que o processo foi concluído."""
-    webhook_url = "https://discord.com/api/webhooks/1488246809338970226/RN3SrywNyY3qLyrNt2Fz9ovI3rU7xEbqcj8jwLmWsSmpbau6LhgUImM8Ibea5StTV8Vp"
-    payload = {"content": "**AutoMessenger WhatsApp** - Processo de envio finalizado com sucesso!"}
-    try:
-        response = requests.post(webhook_url, json=payload)
-        if response.status_code == 204:
-            atualizar_log("Notificação enviada ao Discord.", cor="verde")
-        elif response.status_code == 403:
-            atualizar_log("Falha ao notificar Discord: Webhook inválido ou deletado (403 Forbidden). Atualize a URL do webhook.", cor="vermelho")
-        else:
-            atualizar_log(f"Falha ao notificar Discord: HTTP {response.status_code} - {response.text}", cor="vermelho")
-    except Exception as e:
-        atualizar_log(f"Falha ao notificar Discord: {e}", cor="vermelho")
-
 def notificar_discord_cobranca(total_enviados):
     """Envia notificação ao Discord via webhook específico de cobrança."""
     webhook_url = os.getenv("DISCORD_WEBHOOK_COBRANCA")
@@ -1243,7 +1228,6 @@ def notificar_discord_certificado(total_enviados):
         atualizar_log(f"Falha ao notificar Discord certificado: {e}", cor="vermelho")
 
 def finalizar_programa():
-    notificar_discord()
     messagebox.showinfo("Processo Finalizado", "Processamento concluído!")
     botao_fechar.configure(state="normal")
     botao_iniciar.configure(state="normal")
@@ -1253,7 +1237,6 @@ def finalizar_programa():
 def finalizar_programa_agendado():
     """Finaliza o programa após processamento agendado e fecha o Chrome"""
     global driver_agendamento
-    notificar_discord()
     messagebox.showinfo("Processo Finalizado", "Processamento agendado concluído!")
     botao_fechar.configure(state="normal")
     botao_iniciar.configure(state="normal")
