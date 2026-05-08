@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python -c \"import py_compile; py_compile.compile\\(''AM_Whatsa.py'', doraise=True\\)\")"
+      "Bash(python -c \"import py_compile; py_compile.compile\\(''AM_Whatsa.py'', doraise=True\\)\")",
+      "Bash(reg query *)"
     ]
   }
 }

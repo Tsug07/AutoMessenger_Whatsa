@@ -104,9 +104,12 @@ def esperar_carregamento_completo(driver):
 
 def formatar_telefone_whatsapp(telefone):
     """Formata o número de telefone para uso na URL do WhatsApp.
-    Remove caracteres não numéricos. Se não começar com 55, adiciona o prefixo do Brasil."""
+    Remove caracteres não numéricos. Adiciona 55 apenas se o número parecer brasileiro
+    (10-11 dígitos sem DDI), preservando números estrangeiros que já possuem DDI."""
     telefone = re.sub(r'\D', '', str(telefone))
-    if not telefone.startswith('55'):
+    # Números com 10-11 dígitos são tipicamente brasileiros sem DDI,
+    # exceto se começarem com 1 (DDI dos EUA/Canadá já incluso)
+    if len(telefone) in (10, 11) and not telefone.startswith('1'):
         telefone = '55' + telefone
     return telefone
 
@@ -464,6 +467,23 @@ def encerrar_processos_chrome():
                 pass
     if encerrou_algum:
         time.sleep(2)
+
+def reiniciar_driver(driver, url="https://web.whatsapp.com"):
+    """Fecha e reabre o Chrome para reduzir acúmulo de erros a cada N mensagens."""
+    atualizar_log("Reiniciando o Chrome (a cada 10 mensagens)...", cor="azul")
+    try:
+        driver.quit()
+    except Exception:
+        pass
+    atualizar_log("Aguardando 2 minutos antes de reabrir o Chrome...", cor="azul")
+    time.sleep(120)
+    novo_driver = abrir_chrome_com_url(url)
+    if not novo_driver:
+        atualizar_log("Erro ao reiniciar o Chrome.", cor="vermelho")
+        return driver  # retorna o anterior; o loop vai tratar o erro na próxima navegação
+    time.sleep(15)  # aguarda WhatsApp Web carregar após reinício
+    atualizar_log("Chrome reiniciado com sucesso.", cor="verde")
+    return novo_driver
 
 # Funções de Dados
 def validar_excel(caminho, modelo):
@@ -971,6 +991,7 @@ def processar_dados(excel, modelo, linha_inicial):
 
         idx_processado = 0
         cobranca_enviados = 0
+        msgs_desde_reinicio = 0
         for tel_fmt, indices in grupos_tel.items():
             if cancelar:
                 atualizar_log(f"Processamento cancelado! Tempo decorrido: {formatar_tempo(tempo_inicio)}", cor="azul")
@@ -1002,6 +1023,7 @@ def processar_dados(excel, modelo, linha_inicial):
                 if digitar_e_enviar(driver, mensagem):
                     atualizar_log(f"Mensagem enviada para {nome_emp}!", cor="azul")
                     cobranca_enviados += 1
+                    msgs_desde_reinicio += 1
                     with open(log_file_path, 'a', encoding='utf-8') as f:
                         f.write(f"[{datetime.now()}] Mensagem enviada para {tel} - {cod} {nome_emp}\n")
                 else:
@@ -1009,6 +1031,10 @@ def processar_dados(excel, modelo, linha_inicial):
                 time.sleep(3)
 
             aguardar_intervalo_envio()
+
+            if msgs_desde_reinicio >= 10:
+                driver = reiniciar_driver(driver)
+                msgs_desde_reinicio = 0
 
         notificar_discord_cobranca(cobranca_enviados)
 
@@ -1028,6 +1054,7 @@ def processar_dados(excel, modelo, linha_inicial):
 
         idx_processado = 0
         certificado_enviados = 0
+        msgs_desde_reinicio = 0
         for tel_fmt, indices in grupos_tel.items():
             if cancelar:
                 atualizar_log(f"Processamento cancelado! Tempo decorrido: {formatar_tempo(tempo_inicio)}", cor="azul")
@@ -1059,6 +1086,7 @@ def processar_dados(excel, modelo, linha_inicial):
                 if digitar_e_enviar(driver, mensagem):
                     atualizar_log(f"Mensagem enviada para {nome_emp}!", cor="azul")
                     certificado_enviados += 1
+                    msgs_desde_reinicio += 1
                     with open(log_file_path, 'a', encoding='utf-8') as f:
                         f.write(f"[{datetime.now()}] Mensagem enviada para {tel} - {cod} {nome_emp}\n")
                 else:
@@ -1067,6 +1095,10 @@ def processar_dados(excel, modelo, linha_inicial):
 
             aguardar_intervalo_envio()
 
+            if msgs_desde_reinicio >= 10:
+                driver = reiniciar_driver(driver)
+                msgs_desde_reinicio = 0
+
         notificar_discord_certificado(certificado_enviados)
 
     elif modelo == "ONE":
@@ -1074,6 +1106,7 @@ def processar_dados(excel, modelo, linha_inicial):
         total_contatos = len(telefones_lista)
         estimar_tempo(total_contatos)
         linha_atual = linha_inicial
+        msgs_desde_reinicio = 0
         for i, (tel, empresas, caminhos) in enumerate(zip(telefones_lista, empresas_lista, caminhos_lista)):
             if cancelar:
                 atualizar_log(f"Processamento cancelado! Tempo decorrido: {formatar_tempo(tempo_inicio)}", cor="azul")
@@ -1089,16 +1122,24 @@ def processar_dados(excel, modelo, linha_inicial):
             mensagem = mensagem_padrao(modelo, nome_empresa=nomes_empresas)
             identificador = ", ".join(nomes_empresas)
             if enviar_mensagem(driver, tel, mensagem, tel, identificador, modelo, caminhos):
+                msgs_desde_reinicio += 1
                 with open(log_file_path, 'a', encoding='utf-8') as f:
                     f.write(f"[{datetime.now()}] Mensagem enviada para {tel} com {num_empresas} arquivos\n")
             aguardar_intervalo_envio()
             linha_atual += num_empresas
+
+            if msgs_desde_reinicio >= 10:
+                driver = reiniciar_driver(driver)
+                msgs_desde_reinicio = 0
 
     elif modelo == "ALL_info":
         telefones_lista, empresas_lista, extras = extrair_dados(dados, modelo)
         total_contatos = len(telefones_lista)
         estimar_tempo(total_contatos)
         linha_atual = linha_inicial
+        allinfo_enviados = 0
+        allinfo_msg_selecionada = mensagem_selecionada.get()
+        msgs_desde_reinicio = 0
         for i, (tel, empresas, extra_info) in enumerate(zip(telefones_lista, empresas_lista, extras)):
             if cancelar:
                 atualizar_log(f"Processamento cancelado! Tempo decorrido: {formatar_tempo(tempo_inicio)}", cor="azul")
@@ -1117,16 +1158,25 @@ def processar_dados(excel, modelo, linha_inicial):
             mensagem = mensagem_padrao(modelo, nome_empresa=nomes_empresas, competencia=competencia, empresas_info=empresas)
             identificador = ", ".join(nomes_empresas)
             if enviar_mensagem(driver, tel, mensagem, tel, identificador, modelo):
+                allinfo_enviados += 1
+                msgs_desde_reinicio += 1
                 with open(log_file_path, 'a', encoding='utf-8') as f:
                     f.write(f"[{datetime.now()}] Mensagem enviada para {tel} com {num_empresas} empresa(s){log_extra}\n")
             aguardar_intervalo_envio()
             linha_atual += num_empresas
+
+            if msgs_desde_reinicio >= 10:
+                driver = reiniciar_driver(driver)
+                msgs_desde_reinicio = 0
+
+        notificar_discord_allinfo(allinfo_enviados, allinfo_msg_selecionada)
 
     else:  # Modelo ALL
         telefones_lista, empresas_lista = extrair_dados(dados, modelo)
         total_contatos = len(telefones_lista)
         estimar_tempo(total_contatos)
         linha_atual = linha_inicial
+        msgs_desde_reinicio = 0
 
         arquivo_anexo = None
         if anexo_habilitado and anexo_habilitado.get() and caminho_anexo and caminho_anexo.get():
@@ -1153,11 +1203,16 @@ def processar_dados(excel, modelo, linha_inicial):
             identificador = ", ".join(nomes_empresas)
             caminhos_envio = [arquivo_anexo] if arquivo_anexo else None
             if enviar_mensagem(driver, tel, mensagem, tel, identificador, modelo, caminhos_envio):
+                msgs_desde_reinicio += 1
                 with open(log_file_path, 'a', encoding='utf-8') as f:
                     anexo_info = " + anexo" if arquivo_anexo else ""
                     f.write(f"[{datetime.now()}] Mensagem enviada para {tel} com {num_empresas} empresa(s){anexo_info}\n")
             aguardar_intervalo_envio()
             linha_atual += num_empresas
+
+            if msgs_desde_reinicio >= 10:
+                driver = reiniciar_driver(driver)
+                msgs_desde_reinicio = 0
 
     atualizar_progresso(100, "Concluído")
     atualizar_log(f"Tempo total de processamento: {formatar_tempo(tempo_inicio)}", cor="verde")
@@ -1227,6 +1282,27 @@ def notificar_discord_certificado(total_enviados):
     except Exception as e:
         atualizar_log(f"Falha ao notificar Discord certificado: {e}", cor="vermelho")
 
+def notificar_discord_allinfo(total_enviados, msg_selecionada):
+    """Envia notificação ao Discord via webhook específico de ALL_info."""
+    webhook_url = os.getenv("DISCORD_WEBHOOK_ALLINFO")
+    if not webhook_url:
+        atualizar_log("Webhook de ALL_info não configurado no .env.", cor="vermelho")
+        return
+    mencao = "<@1285694387598397571>"
+    payload = {
+        "content": f"{mencao} **AutoMessenger WhatsApp - ALL Info** - Mensagens enviadas! Modelo: **{msg_selecionada}** | Total: {total_enviados} mensagem(ns) enviada(s)."
+    }
+    try:
+        response = requests.post(webhook_url, json=payload)
+        if response.status_code == 204:
+            atualizar_log("Notificação ALL_info enviada ao Discord.", cor="verde")
+        elif response.status_code == 403:
+            atualizar_log("Falha ao notificar Discord ALL_info: Webhook inválido ou deletado (403 Forbidden).", cor="vermelho")
+        else:
+            atualizar_log(f"Falha ao notificar Discord ALL_info: HTTP {response.status_code} - {response.text}", cor="vermelho")
+    except Exception as e:
+        atualizar_log(f"Falha ao notificar Discord ALL_info: {e}", cor="vermelho")
+
 def finalizar_programa():
     messagebox.showinfo("Processo Finalizado", "Processamento concluído!")
     botao_fechar.configure(state="normal")
@@ -1295,6 +1371,7 @@ def processar_dados_agendado(excel, modelo, linha_inicial):
         for i, tel in enumerate(telefones):
             ultima_ocorrencia_tel[tel] = i
         estimar_tempo(total_contatos)
+        msgs_desde_reinicio = 0
         for i, (cod, nome_emp, tel, p, v, carta) in enumerate(zip(codigos, nomes, telefones, valores, vencimentos, cartas)):
             if cancelar:
                 atualizar_log("Processamento cancelado!", cor="azul")
@@ -1308,9 +1385,14 @@ def processar_dados_agendado(excel, modelo, linha_inicial):
             mensagem = mensagem_padrao(modelo, valores=p, vencimentos=v, carta=carta, nome_empresa=nome_emp)
             eh_ultimo = (ultima_ocorrencia_tel[tel] == i)
             if enviar_mensagem(driver, tel, mensagem, cod, nome_emp, enviar_aviso=eh_ultimo):
+                msgs_desde_reinicio += 1
                 with open(log_file_path, 'a', encoding='utf-8') as f:
                     f.write(f"[{datetime.now()}] Mensagem enviada para {tel}\n")
             aguardar_intervalo_envio()
+
+            if msgs_desde_reinicio >= 10:
+                driver = reiniciar_driver(driver)
+                msgs_desde_reinicio = 0
 
     elif modelo == "ComuniCertificado":
         codigos, nomes, telefones, cnpjs, vencimentos, cartas = extrair_dados(dados, modelo)
@@ -1319,6 +1401,7 @@ def processar_dados_agendado(excel, modelo, linha_inicial):
         for i, tel in enumerate(telefones):
             ultima_ocorrencia_tel[tel] = i
         estimar_tempo(total_contatos)
+        msgs_desde_reinicio = 0
         for i, (cod, nome_emp, tel, c, v, carta) in enumerate(zip(codigos, nomes, telefones, cnpjs, vencimentos, cartas)):
             if cancelar:
                 atualizar_log("Processamento cancelado!", cor="azul")
@@ -1332,15 +1415,21 @@ def processar_dados_agendado(excel, modelo, linha_inicial):
             mensagem = mensagem_padrao(modelo, vencimentos=v, carta=carta, cnpj=c, nome_empresa=nome_emp)
             eh_ultimo = (ultima_ocorrencia_tel[tel] == i)
             if enviar_mensagem(driver, tel, mensagem, cod, nome_emp, enviar_aviso=eh_ultimo):
+                msgs_desde_reinicio += 1
                 with open(log_file_path, 'a', encoding='utf-8') as f:
                     f.write(f"[{datetime.now()}] Mensagem enviada para {tel}\n")
             aguardar_intervalo_envio()
+
+            if msgs_desde_reinicio >= 10:
+                driver = reiniciar_driver(driver)
+                msgs_desde_reinicio = 0
 
     elif modelo == "ONE":
         telefones_lista, empresas_lista, caminhos_lista = extrair_dados(dados, modelo)
         total_contatos = len(telefones_lista)
         estimar_tempo(total_contatos)
         linha_atual = linha_inicial
+        msgs_desde_reinicio = 0
         for i, (tel, empresas, caminhos) in enumerate(zip(telefones_lista, empresas_lista, caminhos_lista)):
             if cancelar:
                 atualizar_log("Processamento cancelado!", cor="azul")
@@ -1357,16 +1446,22 @@ def processar_dados_agendado(excel, modelo, linha_inicial):
             mensagem = mensagem_padrao(modelo, nome_empresa=nomes_empresas)
             identificador = ", ".join(nomes_empresas)
             if enviar_mensagem(driver, tel, mensagem, tel, identificador, modelo, caminhos):
+                msgs_desde_reinicio += 1
                 with open(log_file_path, 'a', encoding='utf-8') as f:
                     f.write(f"[{datetime.now()}] Mensagem enviada para {tel} com {num_empresas} arquivos\n")
             aguardar_intervalo_envio()
             linha_atual += num_empresas
+
+            if msgs_desde_reinicio >= 10:
+                driver = reiniciar_driver(driver)
+                msgs_desde_reinicio = 0
 
     elif modelo == "ALL_info":
         telefones_lista, empresas_lista, extras = extrair_dados(dados, modelo)
         total_contatos = len(telefones_lista)
         estimar_tempo(total_contatos)
         linha_atual = linha_inicial
+        msgs_desde_reinicio = 0
         for i, (tel, empresas, extra_info) in enumerate(zip(telefones_lista, empresas_lista, extras)):
             if cancelar:
                 atualizar_log("Processamento cancelado!", cor="azul")
@@ -1386,16 +1481,22 @@ def processar_dados_agendado(excel, modelo, linha_inicial):
             mensagem = mensagem_padrao(modelo, nome_empresa=nomes_empresas, competencia=competencia, empresas_info=empresas)
             identificador = ", ".join(nomes_empresas)
             if enviar_mensagem(driver, tel, mensagem, tel, identificador, modelo):
+                msgs_desde_reinicio += 1
                 with open(log_file_path, 'a', encoding='utf-8') as f:
                     f.write(f"[{datetime.now()}] Mensagem enviada para {tel} com {num_empresas} empresa(s){log_extra}\n")
             aguardar_intervalo_envio()
             linha_atual += num_empresas
+
+            if msgs_desde_reinicio >= 10:
+                driver = reiniciar_driver(driver)
+                msgs_desde_reinicio = 0
 
     else:  # Modelo ALL
         telefones_lista, empresas_lista = extrair_dados(dados, modelo)
         total_contatos = len(telefones_lista)
         estimar_tempo(total_contatos)
         linha_atual = linha_inicial
+        msgs_desde_reinicio = 0
 
         arquivo_anexo = None
         if anexo_habilitado and anexo_habilitado.get() and caminho_anexo and caminho_anexo.get():
@@ -1423,11 +1524,16 @@ def processar_dados_agendado(excel, modelo, linha_inicial):
             identificador = ", ".join(nomes_empresas)
             caminhos_envio = [arquivo_anexo] if arquivo_anexo else None
             if enviar_mensagem(driver, tel, mensagem, tel, identificador, modelo, caminhos_envio):
+                msgs_desde_reinicio += 1
                 with open(log_file_path, 'a', encoding='utf-8') as f:
                     anexo_info = " + anexo" if arquivo_anexo else ""
                     f.write(f"[{datetime.now()}] Mensagem enviada para {tel} com {num_empresas} empresa(s){anexo_info}\n")
             aguardar_intervalo_envio()
             linha_atual += num_empresas
+
+            if msgs_desde_reinicio >= 10:
+                driver = reiniciar_driver(driver)
+                msgs_desde_reinicio = 0
 
     # Exibir tempo de processamento
     atualizar_log(f"Tempo total de processamento: {formatar_tempo(tempo_inicio)}", cor="verde")
