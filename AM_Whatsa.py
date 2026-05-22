@@ -265,9 +265,36 @@ def digitar_e_enviar(driver, texto):
         time.sleep(random.uniform(0.02, 0.05))
     time.sleep(random.uniform(0.8, 2.0))
 
-    botao_enviar = WebDriverWait(driver, 10).until(
-        EC.element_to_be_clickable((By.XPATH, '//*[@id="main"]/footer/div[1]/div/span/div/div/div/div[4]/div/span/button'))
-    )
+    # Tentar múltiplos seletores para o botão enviar (o WhatsApp Web muda o DOM com frequência)
+    SELETORES_ENVIAR = [
+        (By.XPATH, '//*[@id="main"]/footer/div[1]/div/span/div/div/div/div[4]/div/span/div/button'),
+        (By.XPATH, '//button[@aria-label="Enviar"]'),
+        (By.XPATH, '//button[@data-tab="11"]'),
+        (By.CSS_SELECTOR, '#main footer button[aria-label="Enviar"]'),
+        (By.CSS_SELECTOR, 'span[data-icon="send"] >> xpath=..'),
+        (By.XPATH, '//footer//button[.//*[contains(@data-icon,"send")]]'),
+    ]
+    botao_enviar = None
+    for by, seletor in SELETORES_ENVIAR:
+        try:
+            botao_enviar = WebDriverWait(driver, 15).until(
+                EC.element_to_be_clickable((by, seletor))
+            )
+            break
+        except Exception:
+            continue
+
+    if not botao_enviar:
+        # Última tentativa: pressionar Enter na caixa de mensagem
+        atualizar_log("Botão enviar não encontrado, tentando Enter...", cor="azul")
+        try:
+            caixa_msg.send_keys(Keys.ENTER)
+            time.sleep(random.uniform(2.0, 4.0))
+            return True
+        except Exception as e:
+            atualizar_log(f"Falha ao enviar com Enter: {str(e)}", cor="vermelho")
+            return False
+
     time.sleep(random.uniform(0.3, 1.0))
     botao_enviar.click()
     time.sleep(random.uniform(2.0, 4.0))
@@ -1177,6 +1204,7 @@ def processar_dados(excel, modelo, linha_inicial):
         estimar_tempo(total_contatos)
         linha_atual = linha_inicial
         msgs_desde_reinicio = 0
+        all_enviados = 0
 
         arquivo_anexo = None
         if anexo_habilitado and anexo_habilitado.get() and caminho_anexo and caminho_anexo.get():
@@ -1204,6 +1232,7 @@ def processar_dados(excel, modelo, linha_inicial):
             caminhos_envio = [arquivo_anexo] if arquivo_anexo else None
             if enviar_mensagem(driver, tel, mensagem, tel, identificador, modelo, caminhos_envio):
                 msgs_desde_reinicio += 1
+                all_enviados += 1
                 with open(log_file_path, 'a', encoding='utf-8') as f:
                     anexo_info = " + anexo" if arquivo_anexo else ""
                     f.write(f"[{datetime.now()}] Mensagem enviada para {tel} com {num_empresas} empresa(s){anexo_info}\n")
@@ -1213,6 +1242,8 @@ def processar_dados(excel, modelo, linha_inicial):
             if msgs_desde_reinicio >= 10:
                 driver = reiniciar_driver(driver)
                 msgs_desde_reinicio = 0
+
+        notificar_discord_all(all_enviados)
 
     atualizar_progresso(100, "Concluído")
     atualizar_log(f"Tempo total de processamento: {formatar_tempo(tempo_inicio)}", cor="verde")
@@ -1302,6 +1333,27 @@ def notificar_discord_allinfo(total_enviados, msg_selecionada):
             atualizar_log(f"Falha ao notificar Discord ALL_info: HTTP {response.status_code} - {response.text}", cor="vermelho")
     except Exception as e:
         atualizar_log(f"Falha ao notificar Discord ALL_info: {e}", cor="vermelho")
+
+def notificar_discord_all(total_enviados):
+    """Envia notificação ao Discord via webhook do modelo ALL."""
+    webhook_url = os.getenv("DISCORD_WEBHOOK_ALL")
+    if not webhook_url:
+        atualizar_log("Webhook de ALL não configurado no .env.", cor="vermelho")
+        return
+    cargo = "<@&1445091729047818360>"
+    payload = {
+        "content": f"{cargo} **AutoMessenger WhatsApp - ALL** - Mensagens enviadas! Total: {total_enviados} mensagem(ns) enviada(s)."
+    }
+    try:
+        response = requests.post(webhook_url, json=payload)
+        if response.status_code == 204:
+            atualizar_log("Notificação ALL enviada ao Discord.", cor="verde")
+        elif response.status_code == 403:
+            atualizar_log("Falha ao notificar Discord ALL: Webhook inválido ou deletado (403 Forbidden).", cor="vermelho")
+        else:
+            atualizar_log(f"Falha ao notificar Discord ALL: HTTP {response.status_code} - {response.text}", cor="vermelho")
+    except Exception as e:
+        atualizar_log(f"Falha ao notificar Discord ALL: {e}", cor="vermelho")
 
 def finalizar_programa():
     messagebox.showinfo("Processo Finalizado", "Processamento concluído!")
@@ -1507,6 +1559,7 @@ def processar_dados_agendado(excel, modelo, linha_inicial):
                 atualizar_log(f"Arquivo anexo não encontrado: {arquivo_anexo}", cor="vermelho")
                 arquivo_anexo = None
 
+        all_enviados = 0
         for i, (tel, empresas) in enumerate(zip(telefones_lista, empresas_lista)):
             if cancelar:
                 atualizar_log("Processamento cancelado!", cor="azul")
@@ -1525,6 +1578,7 @@ def processar_dados_agendado(excel, modelo, linha_inicial):
             caminhos_envio = [arquivo_anexo] if arquivo_anexo else None
             if enviar_mensagem(driver, tel, mensagem, tel, identificador, modelo, caminhos_envio):
                 msgs_desde_reinicio += 1
+                all_enviados += 1
                 with open(log_file_path, 'a', encoding='utf-8') as f:
                     anexo_info = " + anexo" if arquivo_anexo else ""
                     f.write(f"[{datetime.now()}] Mensagem enviada para {tel} com {num_empresas} empresa(s){anexo_info}\n")
@@ -1534,6 +1588,8 @@ def processar_dados_agendado(excel, modelo, linha_inicial):
             if msgs_desde_reinicio >= 10:
                 driver = reiniciar_driver(driver)
                 msgs_desde_reinicio = 0
+
+        notificar_discord_all(all_enviados)
 
     # Exibir tempo de processamento
     atualizar_log(f"Tempo total de processamento: {formatar_tempo(tempo_inicio)}", cor="verde")
