@@ -231,17 +231,27 @@ MENSAGEM_AVISO_NUMERO = (
 
 def digitar_e_enviar(driver, texto):
     """Localiza a caixa de mensagem, digita o texto e clica em enviar. Retorna True se sucesso."""
+    SELETORES_CAIXA = [
+        (By.CSS_SELECTOR, 'div[data-testid="conversation-compose-box-input"]'),
+        (By.CSS_SELECTOR, 'div[data-lexical-editor="true"]'),
+        (By.CSS_SELECTOR, '#main footer div.lexical-rich-text-input p'),
+        (By.XPATH, '//div[@contenteditable="true" and @data-tab="10"]'),
+    ]
     caixa_msg = None
     for tentativa in range(3):
-        try:
-            caixa_msg = WebDriverWait(driver, 15).until(
-                EC.element_to_be_clickable((By.CSS_SELECTOR, '#main footer div.lexical-rich-text-input p'))
-            )
+        for by, seletor in SELETORES_CAIXA:
+            try:
+                caixa_msg = WebDriverWait(driver, 10).until(
+                    EC.element_to_be_clickable((by, seletor))
+                )
+                break
+            except Exception:
+                continue
+        if caixa_msg:
             caixa_msg.click()
             break
-        except Exception:
-            atualizar_log(f"Tentativa {tentativa + 1}/3: caixa de mensagem não encontrada, aguardando...", cor="azul")
-            time.sleep(5)
+        atualizar_log(f"Tentativa {tentativa + 1}/3: caixa de mensagem não encontrada, aguardando...", cor="azul")
+        time.sleep(5)
     if not caixa_msg:
         atualizar_log("Não foi possível encontrar a caixa de mensagem.", cor="vermelho")
         return False
@@ -267,12 +277,11 @@ def digitar_e_enviar(driver, texto):
 
     # Tentar múltiplos seletores para o botão enviar (o WhatsApp Web muda o DOM com frequência)
     SELETORES_ENVIAR = [
-        (By.XPATH, '//*[@id="main"]/footer/div[1]/div/span/div/div/div/div[4]/div/span/div/button'),
         (By.XPATH, '//button[@aria-label="Enviar"]'),
-        (By.XPATH, '//button[@data-tab="11"]'),
-        (By.CSS_SELECTOR, '#main footer button[aria-label="Enviar"]'),
-        (By.CSS_SELECTOR, 'span[data-icon="send"] >> xpath=..'),
-        (By.XPATH, '//footer//button[.//*[contains(@data-icon,"send")]]'),
+        (By.CSS_SELECTOR, 'button[aria-label="Enviar"]'),
+        (By.XPATH, '//button[@data-tab="11" and @aria-label="Enviar"]'),
+        (By.XPATH, '//*[@id="main"]/footer/div[1]/div/span/div/div/div/div[4]/div/span/div/button'),
+        (By.XPATH, '//footer//button[.//*[@data-icon="send"]]'),
     ]
     botao_enviar = None
     for by, seletor in SELETORES_ENVIAR:
