@@ -63,8 +63,8 @@ perfil_selecionado = None  # Perfil do Chrome (1 ou 2)
 driver_agendamento = None  # Driver do Chrome para agendamento
 keep_alive_ativo = False  # Flag para keep-alive
 KEEP_ALIVE_INTERVALO = 30 * 60 * 1000  # 30 minutos em milissegundos
-INTERVALO_MIN = 7 * 60  # Mínimo 7 minutos entre cada envio (em segundos)
-INTERVALO_MAX = 10 * 60  # Máximo 10 minutos entre cada envio (em segundos)
+INTERVALO_MIN = 2 * 60  # Mínimo 2 minutos entre cada envio (em segundos) - TESTE verifica meta
+INTERVALO_MAX = 4 * 60  # Máximo 4 minutos entre cada envio (em segundos) - TESTE verifica meta
 
 # Modelos suportados
 MODELOS = {
@@ -280,6 +280,8 @@ def digitar_e_enviar(driver, texto):
         (By.XPATH, '//button[@aria-label="Enviar"]'),
         (By.CSS_SELECTOR, 'button[aria-label="Enviar"]'),
         (By.XPATH, '//button[@data-tab="11" and @aria-label="Enviar"]'),
+        (By.XPATH, '//footer//button[.//*[@data-testid="wds-ic-send-filled"]]'),
+        (By.XPATH, '//footer//button[.//*[@data-icon="wds-ic-send-filled"]]'),
         (By.XPATH, '//*[@id="main"]/footer/div[1]/div/span/div/div/div/div[4]/div/span/div/button'),
         (By.XPATH, '//footer//button[.//*[@data-icon="send"]]'),
     ]
