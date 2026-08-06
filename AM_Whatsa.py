@@ -63,8 +63,8 @@ perfil_selecionado = None  # Perfil do Chrome (1 ou 2)
 driver_agendamento = None  # Driver do Chrome para agendamento
 keep_alive_ativo = False  # Flag para keep-alive
 KEEP_ALIVE_INTERVALO = 30 * 60 * 1000  # 30 minutos em milissegundos
-INTERVALO_MIN = 2 * 60  # Mínimo 2 minutos entre cada envio (em segundos) - TESTE verifica meta
-INTERVALO_MAX = 4 * 60  # Máximo 4 minutos entre cada envio (em segundos) - TESTE verifica meta
+INTERVALO_MIN = 20  # Mínimo 20 segundos entre cada envio - TESTE AGRESSIVO verifica meta
+INTERVALO_MAX = 60  # Máximo 1 minuto entre cada envio - TESTE AGRESSIVO verifica meta
 
 # Modelos suportados
 MODELOS = {
@@ -131,6 +131,68 @@ def aguardar_intervalo_envio():
         time.sleep(min(30, restante))
 
 
+def fechar_popups_informativos(driver, timeout=2):
+    """Fecha popups informativos do WhatsApp Web (ex.: 'Novidades do WhatsApp Web').
+
+    Clica no botão de ação (Continuar/OK/Entendi) ou, se não achar, no 'X' de fechar.
+    Retorna True se fechou algum popup."""
+    fechou_algum = False
+    try:
+        for _ in range(3):  # podem aparecer popups encadeados
+            try:
+                popup = WebDriverWait(driver, timeout).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, 'div[data-testid="confirm-popup"]'))
+                )
+            except Exception:
+                break
+
+            titulo = ""
+            try:
+                titulo = popup.find_element(By.CSS_SELECTOR, '[data-testid="popup-title"]').text.strip()
+            except Exception:
+                pass
+
+            clicou = False
+            # 1) Botão de ação principal dentro do corpo do popup
+            for xpath in (
+                './/button[.//span[normalize-space()="Continuar"]]',
+                './/button[.//span[normalize-space()="OK"]]',
+                './/button[.//span[normalize-space()="Ok"]]',
+                './/button[.//span[normalize-space()="Entendi"]]',
+                './/button[.//span[normalize-space()="Agora não"]]',
+                './/div[@data-testid="popup-contents"]//button[not(@aria-label="Fechar")]',
+            ):
+                try:
+                    botao = popup.find_element(By.XPATH, xpath)
+                    driver.execute_script("arguments[0].click();", botao)
+                    clicou = True
+                    break
+                except Exception:
+                    continue
+
+            # 2) Fallback: botão "X" de fechar
+            if not clicou:
+                for seletor in ('button[aria-label="Fechar"]', 'button[aria-label="Close"]'):
+                    try:
+                        botao = popup.find_element(By.CSS_SELECTOR, seletor)
+                        driver.execute_script("arguments[0].click();", botao)
+                        clicou = True
+                        break
+                    except Exception:
+                        continue
+
+            if not clicou:
+                atualizar_log("Popup detectado, mas não foi possível fechá-lo.", cor="vermelho")
+                break
+
+            atualizar_log(f"Popup fechado: {titulo or 'aviso do WhatsApp Web'}", cor="azul")
+            fechou_algum = True
+            time.sleep(1)
+    except Exception:
+        pass
+    return fechou_algum
+
+
 def verificar_numero_invalido(driver, telefone_formatado):
     """Verifica se apareceu o popup 'O número não está no WhatsApp' e clica em OK."""
     SELETOR_BTN_OK = "#app > div > div > span:nth-child(3) > div > span > div > div > div > div > div > div.x78zum5.x8hhl5t.x13a6bvl.x13crsa5.x1gabggj.x18d9i69.xaso8d8.xp4054r.xuxw1ft > div > button"
@@ -163,6 +225,9 @@ def navegar_para_contato_whatsapp(driver, telefone):
 
             if not esperar_carregamento_completo(driver):
                 return False
+
+            # Fechar popups informativos (ex.: "Novidades do WhatsApp Web")
+            fechar_popups_informativos(driver)
 
             # Verificar se o número não está no WhatsApp
             if verificar_numero_invalido(driver, telefone_formatado):
@@ -210,6 +275,9 @@ def navegar_para_contato_whatsapp(driver, telefone):
         if not esperar_carregamento_completo(driver):
             return False
 
+        # Fechar popups informativos (ex.: "Novidades do WhatsApp Web")
+        fechar_popups_informativos(driver)
+
         # Verificar se o número não está no WhatsApp
         if verificar_numero_invalido(driver, telefone_formatado):
             return False
@@ -251,6 +319,8 @@ def digitar_e_enviar(driver, texto):
             caixa_msg.click()
             break
         atualizar_log(f"Tentativa {tentativa + 1}/3: caixa de mensagem não encontrada, aguardando...", cor="azul")
+        # Um popup pode estar bloqueando a interface
+        fechar_popups_informativos(driver)
         time.sleep(5)
     if not caixa_msg:
         atualizar_log("Não foi possível encontrar a caixa de mensagem.", cor="vermelho")
