@@ -140,12 +140,38 @@ SELETORES_POPUP = (
     'div[data-testid="popup-controls-ok"]',
 )
 
-# Textos dos botões que dispensam o popup (comparação case-insensitive)
+# Textos dos botões que dispensam o popup (comparação case-insensitive).
+# NÃO incluir "cancelar": em modais de carregamento isso aborta a abertura do chat.
 TEXTOS_BOTAO_FECHAR = (
     "continuar", "ok", "entendi", "agora não", "agora nao",
-    "fechar", "dispensar", "cancelar", "não, obrigado", "nao, obrigado",
-    "depois", "pular", "começar", "comecar", "usar aqui", "continue",
+    "fechar", "dispensar", "não, obrigado", "nao, obrigado",
+    "depois", "pular", "usar aqui", "continue",
 )
+
+# Modais transitórios de carregamento: o WhatsApp os remove sozinho quando termina.
+# Clicar em qualquer botão neles (ex.: "Cancelar") ABORTA a abertura do chat.
+TITULOS_POPUP_TRANSITORIO = (
+    "iniciando conversa", "starting chat", "carregando", "loading",
+    "abrindo conversa", "sincronizando", "syncing",
+)
+
+
+def _titulo_popup(popup):
+    """Extrai o título textual do popup, ou string vazia."""
+    for seletor_titulo in ('[data-testid="popup-title"]', 'h1', 'h2'):
+        try:
+            titulo = popup.find_element(By.CSS_SELECTOR, seletor_titulo).text.strip()
+            if titulo:
+                return titulo
+        except Exception:
+            continue
+    return ""
+
+
+def _e_transitorio(titulo):
+    """True se o título indicar um modal de carregamento que some sozinho."""
+    t = (titulo or "").strip().lower()
+    return any(marcador in t for marcador in TITULOS_POPUP_TRANSITORIO)
 
 
 def _localizar_popup_visivel(driver):
@@ -163,9 +189,31 @@ def _localizar_popup_visivel(driver):
     return None
 
 
+def aguardar_popup_transitorio(driver, timeout=30):
+    """Espera modais de carregamento ('Iniciando conversa') sumirem sozinhos.
+
+    Retorna True se não sobrou nenhum modal transitório na tela."""
+    fim = time.time() + timeout
+    avisou = False
+    while time.time() < fim:
+        popup = _localizar_popup_visivel(driver)
+        if popup is None or not _e_transitorio(_titulo_popup(popup)):
+            return True
+        if not avisou:
+            atualizar_log("Aguardando o WhatsApp terminar de abrir a conversa...", cor="azul")
+            avisou = True
+        time.sleep(1)
+    return False
+
+
 def popup_bloqueando(driver):
-    """True se ainda houver um modal visível bloqueando a interface."""
-    return _localizar_popup_visivel(driver) is not None
+    """True se ainda houver um modal visível bloqueando a interface.
+
+    Modais transitórios de carregamento não contam como bloqueio."""
+    popup = _localizar_popup_visivel(driver)
+    if popup is None:
+        return False
+    return not _e_transitorio(_titulo_popup(popup))
 
 
 def fechar_popups_informativos(driver, timeout=2):
@@ -188,14 +236,12 @@ def fechar_popups_informativos(driver, timeout=2):
             if popup is None:
                 break
 
-            titulo = ""
-            for seletor_titulo in ('[data-testid="popup-title"]', 'h1', 'h2'):
-                try:
-                    titulo = popup.find_element(By.CSS_SELECTOR, seletor_titulo).text.strip()
-                    if titulo:
-                        break
-                except Exception:
-                    continue
+            titulo = _titulo_popup(popup)
+
+            # Modal de carregamento: não clicar em nada, apenas esperar sumir
+            if _e_transitorio(titulo):
+                aguardar_popup_transitorio(driver)
+                continue
 
             clicou = False
 
@@ -218,18 +264,8 @@ def fechar_popups_informativos(driver, timeout=2):
                 except Exception:
                     continue
 
-            # 2) Fallback: qualquer botão visível dentro do popup
-            if not clicou:
-                for botao in botoes:
-                    try:
-                        if botao.is_displayed():
-                            driver.execute_script("arguments[0].click();", botao)
-                            clicou = True
-                            break
-                    except Exception:
-                        continue
-
-            # 3) Último recurso: tecla ESC
+            # 2) Último recurso: tecla ESC. Não clicamos em botão desconhecido,
+            # pois uma ação errada pode abortar a conversa.
             if not clicou:
                 try:
                     driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
@@ -239,7 +275,10 @@ def fechar_popups_informativos(driver, timeout=2):
                     pass
 
             if not clicou:
-                atualizar_log("Popup detectado, mas não foi possível fechá-lo.", cor="vermelho")
+                atualizar_log(
+                    f"Popup '{titulo or 'desconhecido'}' detectado, mas não foi possível fechá-lo.",
+                    cor="vermelho",
+                )
                 break
 
             atualizar_log(f"Popup fechado: {titulo or 'aviso do WhatsApp Web'}", cor="azul")
@@ -282,6 +321,9 @@ def navegar_para_contato_whatsapp(driver, telefone):
 
             if not esperar_carregamento_completo(driver):
                 return False
+
+            # Esperar o modal "Iniciando conversa" sumir sozinho antes de mexer na tela
+            aguardar_popup_transitorio(driver)
 
             # Fechar popups informativos (ex.: "Novidades do WhatsApp Web")
             fechar_popups_informativos(driver)
@@ -340,6 +382,9 @@ def navegar_para_contato_whatsapp(driver, telefone):
         if not esperar_carregamento_completo(driver):
             return False
 
+        # Esperar o modal "Iniciando conversa" sumir sozinho antes de mexer na tela
+        aguardar_popup_transitorio(driver)
+
         # Fechar popups informativos (ex.: "Novidades do WhatsApp Web")
         fechar_popups_informativos(driver)
 
@@ -382,6 +427,8 @@ def digitar_e_enviar(driver, texto):
     """Localiza a caixa de mensagem, digita o texto e clica em enviar. Retorna True se sucesso."""
     caixa_msg = None
     for tentativa in range(3):
+        # A conversa pode ainda estar carregando; esperar antes de procurar a caixa
+        aguardar_popup_transitorio(driver)
         # Um popup aberto bloqueia a caixa de mensagem: fecha antes de procurar
         if popup_bloqueando(driver):
             fechar_popups_informativos(driver, timeout=0)
@@ -1123,8 +1170,21 @@ def iniciar_processamento():
     botao_iniciar_chrome.configure(state="disabled")  # Desativar o botão de Chrome
     botao_agendar.configure(state="disabled")  # Desativar agendamento durante processamento
     inicializar_arquivo_log(modelo)
-    thread = threading.Thread(target=processar_dados, args=(excel, modelo, linha))
+    thread = threading.Thread(target=executar_com_reset, args=(processar_dados, excel, modelo, linha))
     thread.start()
+
+
+def executar_com_reset(funcao, *args):
+    """Roda a função de processamento garantindo que os botões voltem ao normal.
+
+    Sem isto, qualquer saída antecipada (cancelamento ou erro) deixa o botão
+    'Iniciar' desabilitado e obriga a reabrir o programa."""
+    try:
+        funcao(*args)
+    except Exception as e:
+        atualizar_log(f"Erro inesperado no processamento: {e}", cor="vermelho")
+    finally:
+        restaurar_botoes()
 
 def formatar_tempo(tempo_inicio):
     """Calcula e formata o tempo decorrido desde tempo_inicio."""
@@ -1435,11 +1495,79 @@ def processar_dados(excel, modelo, linha_inicial):
     finalizar_programa()
 
 
+def restaurar_botoes():
+    """Devolve os botões ao estado ocioso. Seguro de chamar de qualquer thread."""
+    def _aplicar():
+        try:
+            botao_iniciar.configure(state="normal")
+            botao_iniciar_chrome.configure(state="normal")
+            botao_fechar.configure(state="normal")
+            # Só reabilita o agendamento se não houver um agendamento em curso
+            if not agendamento_ativo and not keep_alive_ativo:
+                botao_agendar.configure(state="normal")
+        except Exception:
+            pass
+    try:
+        janela.after(0, _aplicar)
+    except Exception:
+        _aplicar()
+
+
+def reiniciar_automacao():
+    """Volta o programa ao estado inicial sem precisar fechar e reabrir.
+
+    Cancela o processamento em andamento, fecha o Chrome da automação,
+    zera o progresso e reabilita os botões."""
+    global cancelar, agendamento_ativo
+
+    if not messagebox.askyesno(
+        "Reiniciar automação",
+        "Isto vai interromper o processamento em andamento e fechar o Chrome da automação.\n\nDeseja continuar?",
+    ):
+        return
+
+    atualizar_log("\n=== Reiniciando automação ===", cor="azul")
+
+    # 1) Sinalizar cancelamento para as threads de processamento
+    cancelar = True
+
+    # 2) Cancelar agendamento e keep-alive, se ativos
+    if agendamento_ativo:
+        try:
+            agendamento_ativo.cancel()
+        except Exception:
+            pass
+        agendamento_ativo = None
+        try:
+            botao_cancelar_agendamento.configure(state="disabled")
+        except Exception:
+            pass
+    parar_keep_alive()
+
+    # 3) Fechar o Chrome (driver do agendamento e processos remanescentes)
+    fechar_chrome_agendamento()
+    try:
+        encerrar_processos_chrome()
+    except Exception as e:
+        atualizar_log(f"Aviso ao encerrar Chrome: {e}", cor="vermelho")
+
+    # 4) Zerar progresso e liberar a UI
+    try:
+        atualizar_progresso(0, "")
+    except Exception:
+        pass
+    restaurar_botoes()
+
+    # 5) Liberar novo processamento
+    cancelar = False
+    atualizar_log("Automação reiniciada. Pronto para iniciar novamente.", cor="verde")
+
+
 def cancelar_processamento():
     global cancelar
     cancelar = True
     atualizar_log("Cancelando processamento...", cor="azul")
-    botao_fechar.configure(state="normal")
+    restaurar_botoes()
 
 def fechar_programa():
     global agendamento_ativo, keep_alive_ativo
@@ -1990,7 +2118,7 @@ def iniciar_processamento_agendado():
     inicializar_arquivo_log(modelo)
 
     # Usar o driver existente do agendamento
-    thread = threading.Thread(target=processar_dados_agendado, args=(excel, modelo, linha))
+    thread = threading.Thread(target=executar_com_reset, args=(processar_dados_agendado, excel, modelo, linha))
     thread.start()
 
 def cancelar_agendamento():
@@ -2482,6 +2610,8 @@ def main():
     botao_iniciar.pack(side="left", padx=(0, 6))
     botao_cancelar = ctk.CTkButton(frame_acoes, text="Parar", command=cancelar_processamento, fg_color="#dc3545", hover_color="#c82333", width=70, height=H_BTN_ACTION, font=FONT_LABEL)
     botao_cancelar.pack(side="left", padx=(0, 6))
+    botao_reiniciar = ctk.CTkButton(frame_acoes, text="Reiniciar", command=reiniciar_automacao, fg_color="#fd7e14", hover_color="#e06b0a", width=80, height=H_BTN_ACTION, font=FONT_LABEL)
+    botao_reiniciar.pack(side="left", padx=(0, 6))
     botao_abrir_log = ctk.CTkButton(frame_acoes, text="Log", command=abrir_log, fg_color="#17a2b8", hover_color="#138496", width=60, height=H_BTN_ACTION, font=FONT_LABEL)
     botao_abrir_log.pack(side="left", padx=(0, 6))
     botao_fechar = ctk.CTkButton(frame_acoes, text="Fechar", command=fechar_programa, state="disabled", fg_color="#6c757d", hover_color="#5a6268", width=70, height=H_BTN_ACTION, font=FONT_LABEL)
