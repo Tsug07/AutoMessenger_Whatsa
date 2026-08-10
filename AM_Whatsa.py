@@ -131,55 +131,112 @@ def aguardar_intervalo_envio():
         time.sleep(min(30, restante))
 
 
+# Seletores de modais/popups do WhatsApp Web. O DOM muda com frequência, por isso
+# usamos vários seletores genéricos em vez de depender só de data-testid.
+SELETORES_POPUP = (
+    'div[data-testid="confirm-popup"]',
+    'div[data-animate-modal-popup="true"]',
+    'div[role="dialog"]',
+    'div[data-testid="popup-controls-ok"]',
+)
+
+# Textos dos botões que dispensam o popup (comparação case-insensitive)
+TEXTOS_BOTAO_FECHAR = (
+    "continuar", "ok", "entendi", "agora não", "agora nao",
+    "fechar", "dispensar", "cancelar", "não, obrigado", "nao, obrigado",
+    "depois", "pular", "começar", "comecar", "usar aqui", "continue",
+)
+
+
+def _localizar_popup_visivel(driver):
+    """Retorna o primeiro elemento de popup/modal visível na tela, ou None."""
+    for seletor in SELETORES_POPUP:
+        try:
+            for elemento in driver.find_elements(By.CSS_SELECTOR, seletor):
+                try:
+                    if elemento.is_displayed():
+                        return elemento
+                except Exception:
+                    continue
+        except Exception:
+            continue
+    return None
+
+
+def popup_bloqueando(driver):
+    """True se ainda houver um modal visível bloqueando a interface."""
+    return _localizar_popup_visivel(driver) is not None
+
+
 def fechar_popups_informativos(driver, timeout=2):
     """Fecha popups informativos do WhatsApp Web (ex.: 'Novidades do WhatsApp Web').
 
-    Clica no botão de ação (Continuar/OK/Entendi) ou, se não achar, no 'X' de fechar.
+    Tenta, em ordem: botão de ação por texto, botão de fechar por aria-label,
+    qualquer botão visível do popup e, por fim, a tecla ESC.
     Retorna True se fechou algum popup."""
     fechou_algum = False
     try:
         for _ in range(3):  # podem aparecer popups encadeados
-            try:
-                popup = WebDriverWait(driver, timeout).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, 'div[data-testid="confirm-popup"]'))
-                )
-            except Exception:
+            popup = _localizar_popup_visivel(driver)
+            if popup is None and timeout:
+                # Dá uma janela curta para o popup aparecer na primeira volta
+                fim = time.time() + timeout
+                while popup is None and time.time() < fim:
+                    time.sleep(0.3)
+                    popup = _localizar_popup_visivel(driver)
+                timeout = 0  # nas voltas seguintes não espera de novo
+            if popup is None:
                 break
 
             titulo = ""
-            try:
-                titulo = popup.find_element(By.CSS_SELECTOR, '[data-testid="popup-title"]').text.strip()
-            except Exception:
-                pass
-
-            clicou = False
-            # 1) Botão de ação principal dentro do corpo do popup
-            for xpath in (
-                './/button[.//span[normalize-space()="Continuar"]]',
-                './/button[.//span[normalize-space()="OK"]]',
-                './/button[.//span[normalize-space()="Ok"]]',
-                './/button[.//span[normalize-space()="Entendi"]]',
-                './/button[.//span[normalize-space()="Agora não"]]',
-                './/div[@data-testid="popup-contents"]//button[not(@aria-label="Fechar")]',
-            ):
+            for seletor_titulo in ('[data-testid="popup-title"]', 'h1', 'h2'):
                 try:
-                    botao = popup.find_element(By.XPATH, xpath)
-                    driver.execute_script("arguments[0].click();", botao)
-                    clicou = True
-                    break
+                    titulo = popup.find_element(By.CSS_SELECTOR, seletor_titulo).text.strip()
+                    if titulo:
+                        break
                 except Exception:
                     continue
 
-            # 2) Fallback: botão "X" de fechar
-            if not clicou:
-                for seletor in ('button[aria-label="Fechar"]', 'button[aria-label="Close"]'):
-                    try:
-                        botao = popup.find_element(By.CSS_SELECTOR, seletor)
+            clicou = False
+
+            # 1) Botão de ação identificado pelo texto (em qualquer nível do botão)
+            try:
+                botoes = popup.find_elements(By.TAG_NAME, "button")
+            except Exception:
+                botoes = []
+            for botao in botoes:
+                try:
+                    if not botao.is_displayed():
+                        continue
+                    rotulo = (botao.text or "").strip().lower()
+                    if not rotulo:
+                        rotulo = (botao.get_attribute("aria-label") or "").strip().lower()
+                    if any(texto in rotulo for texto in TEXTOS_BOTAO_FECHAR):
                         driver.execute_script("arguments[0].click();", botao)
                         clicou = True
                         break
+                except Exception:
+                    continue
+
+            # 2) Fallback: qualquer botão visível dentro do popup
+            if not clicou:
+                for botao in botoes:
+                    try:
+                        if botao.is_displayed():
+                            driver.execute_script("arguments[0].click();", botao)
+                            clicou = True
+                            break
                     except Exception:
                         continue
+
+            # 3) Último recurso: tecla ESC
+            if not clicou:
+                try:
+                    driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+                    time.sleep(1)
+                    clicou = _localizar_popup_visivel(driver) is None
+                except Exception:
+                    pass
 
             if not clicou:
                 atualizar_log("Popup detectado, mas não foi possível fechá-lo.", cor="vermelho")
@@ -233,6 +290,14 @@ def navegar_para_contato_whatsapp(driver, telefone):
             if verificar_numero_invalido(driver, telefone_formatado):
                 return False
 
+            # Se um modal continua na tela, a interface está bloqueada: não adianta seguir
+            if popup_bloqueando(driver):
+                atualizar_log(
+                    f"Popup ainda bloqueando a tela para {telefone_formatado}. Pulando contato.",
+                    cor="vermelho",
+                )
+                return False
+
             atualizar_log(f"Chat aberto para {telefone_formatado}.", cor="azul")
             return True
 
@@ -282,6 +347,14 @@ def navegar_para_contato_whatsapp(driver, telefone):
         if verificar_numero_invalido(driver, telefone_formatado):
             return False
 
+        # Se um modal continua na tela, a interface está bloqueada: não adianta seguir
+        if popup_bloqueando(driver):
+            atualizar_log(
+                f"Popup ainda bloqueando a tela para {telefone_formatado}. Pulando contato.",
+                cor="vermelho",
+            )
+            return False
+
         atualizar_log(f"Chat aberto para {telefone_formatado}.", cor="azul")
         return True
     except Exception as e:
@@ -297,19 +370,28 @@ MENSAGEM_AVISO_NUMERO = (
 )
 
 
+SELETORES_CAIXA = [
+    (By.CSS_SELECTOR, 'div[data-testid="conversation-compose-box-input"]'),
+    (By.CSS_SELECTOR, 'div[data-lexical-editor="true"]'),
+    (By.CSS_SELECTOR, '#main footer div.lexical-rich-text-input p'),
+    (By.XPATH, '//div[@contenteditable="true" and @data-tab="10"]'),
+]
+
+
 def digitar_e_enviar(driver, texto):
     """Localiza a caixa de mensagem, digita o texto e clica em enviar. Retorna True se sucesso."""
-    SELETORES_CAIXA = [
-        (By.CSS_SELECTOR, 'div[data-testid="conversation-compose-box-input"]'),
-        (By.CSS_SELECTOR, 'div[data-lexical-editor="true"]'),
-        (By.CSS_SELECTOR, '#main footer div.lexical-rich-text-input p'),
-        (By.XPATH, '//div[@contenteditable="true" and @data-tab="10"]'),
-    ]
     caixa_msg = None
     for tentativa in range(3):
-        for by, seletor in SELETORES_CAIXA:
+        # Um popup aberto bloqueia a caixa de mensagem: fecha antes de procurar
+        if popup_bloqueando(driver):
+            fechar_popups_informativos(driver, timeout=0)
+            if popup_bloqueando(driver):
+                atualizar_log("Popup bloqueando a caixa de mensagem. Abortando envio.", cor="vermelho")
+                return False
+        # Timeout curto no primeiro seletor de cada volta; os demais só se já estiver no DOM
+        for i, (by, seletor) in enumerate(SELETORES_CAIXA):
             try:
-                caixa_msg = WebDriverWait(driver, 10).until(
+                caixa_msg = WebDriverWait(driver, 5 if i == 0 else 2).until(
                     EC.element_to_be_clickable((by, seletor))
                 )
                 break
@@ -319,9 +401,7 @@ def digitar_e_enviar(driver, texto):
             caixa_msg.click()
             break
         atualizar_log(f"Tentativa {tentativa + 1}/3: caixa de mensagem não encontrada, aguardando...", cor="azul")
-        # Um popup pode estar bloqueando a interface
-        fechar_popups_informativos(driver)
-        time.sleep(5)
+        time.sleep(3)
     if not caixa_msg:
         atualizar_log("Não foi possível encontrar a caixa de mensagem.", cor="vermelho")
         return False
@@ -356,9 +436,9 @@ def digitar_e_enviar(driver, texto):
         (By.XPATH, '//footer//button[.//*[@data-icon="send"]]'),
     ]
     botao_enviar = None
-    for by, seletor in SELETORES_ENVIAR:
+    for i, (by, seletor) in enumerate(SELETORES_ENVIAR):
         try:
-            botao_enviar = WebDriverWait(driver, 15).until(
+            botao_enviar = WebDriverWait(driver, 8 if i == 0 else 2).until(
                 EC.element_to_be_clickable((by, seletor))
             )
             break
@@ -370,16 +450,39 @@ def digitar_e_enviar(driver, texto):
         atualizar_log("Botão enviar não encontrado, tentando Enter...", cor="azul")
         try:
             caixa_msg.send_keys(Keys.ENTER)
-            time.sleep(random.uniform(2.0, 4.0))
-            return True
         except Exception as e:
             atualizar_log(f"Falha ao enviar com Enter: {str(e)}", cor="vermelho")
             return False
+    else:
+        time.sleep(random.uniform(0.3, 1.0))
+        botao_enviar.click()
 
-    time.sleep(random.uniform(0.3, 1.0))
-    botao_enviar.click()
     time.sleep(random.uniform(2.0, 4.0))
+
+    # Confirmar o envio: a caixa de mensagem deve ter ficado vazia
+    if not caixa_esvaziou(driver):
+        atualizar_log("Mensagem não saiu da caixa de texto - envio não confirmado.", cor="vermelho")
+        return False
     return True
+
+
+def caixa_esvaziou(driver, timeout=8):
+    """True se a caixa de composição estiver vazia (sinal de que a mensagem foi enviada)."""
+    fim = time.time() + timeout
+    while time.time() < fim:
+        try:
+            for by, seletor in SELETORES_CAIXA:
+                try:
+                    elemento = driver.find_element(by, seletor)
+                except Exception:
+                    continue
+                if not (elemento.text or "").strip():
+                    return True
+                break
+        except Exception:
+            pass
+        time.sleep(0.5)
+    return False
 
 
 def enviar_mensagem(driver, telefone, mensagem, codigo, identificador, modelo=None, caminhos=None, enviar_aviso=True):
